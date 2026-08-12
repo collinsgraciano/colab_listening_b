@@ -142,7 +142,13 @@ TECHNICAL REQUIREMENTS:
 - "char_b_gender": "male" or "female" — the gender of speaker 2
 - "char_a_role": the role of speaker 1 in the story (e.g. "waitress", "customer")
 - "char_b_role": the role of speaker 2 in the story (e.g. "customer", "waitress")
-- "youtube_title": a high-CTR YouTube title (max 60 chars). Must include the topic keyword and "English Listening Practice". Use power words and emoji. Example: "English Listening Practice | At the Pharmacy 🏥 A2 Level"
+- "youtube_title": a high-CTR YouTube title for overseas Chinese learners. ALL Chinese text in Traditional Chinese (繁體中文). Use the following format patterns (pick one, vary between videos):
+  Pattern A: 【沉浸式英文動畫】{hook phrase} {emoji} {topic description in 繁中}：{specific skills listed}，聽完就能說！｜{English topic}
+  Pattern B: 【每天50句英文】{emoji}{topic 繁中}情境對話｜🎬沉浸式英文動畫｜旅行必備英文｜不用背多聽就會用｜英文聽力訓練｜情境英文對話｜高頻口語句型｜英文口說跟讀練習｜英文高效學習法
+  Pattern C: 【🎬沉浸式英文動畫】{emoji}{topic 繁中}英文｜✅{specific skill 繁中}｜🗣️small talk・{sub-topic}｜每天50句英文｜真實情境完整呈現｜💡不用背多聽就會用｜{CEFR} 初學者必學｜旅行必備英文｜英文聽力口說
+  Rules: Start with 【】bracket tag. Use ｜ as separator. Include 3-8 topic-relevant emoji. Include catchy power phrases like "不用背多聽就會用", "聽完就能說", "超實用". End with ｜{English topic name}. Title length 80-150 chars.
+  Examples: "【沉浸式英文動畫】出國怕開口？✈️ 超實用機場英文：訂票、報到、托運行李一次搞定，聽完就能說！｜Airport English"
+  "【每天50句英文】🧳機場失物招領情境對話｜🎬沉浸式英文動畫｜旅行必備英文｜不用背多聽就會用｜英文聽力訓練｜情境英文對話｜高頻口語句型｜英文口說跟讀練習｜英文高效學習法"
 - "youtube_description": a full YouTube video description (max 3000 chars). First line must be a hook with the main keyword. Include a "⏱️ Chapters:" section with timestamps for: 00:00 Title, 00:05 Dialogue, 00:xx Shadowing Practice, 00:xx Outro. End with 3 hashtags (#EnglishListening #ESL #LearnEnglish) and a subscribe CTA. ALL Chinese text in Traditional Chinese (繁體中文).
 - "youtube_tags": an array of 15-20 SEO tags (mix of short and long-tail keywords, include both English and Traditional Chinese tags)
 - "scene": the English name of the scene/location (e.g. "pharmacy", "coffee shop", "hotel lobby"). Used for thumbnail and prompts.
