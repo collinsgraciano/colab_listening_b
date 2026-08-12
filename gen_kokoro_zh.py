@@ -1,11 +1,11 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Standalone Kokoro Chinese TTS generator using zf_xiaoxiao.pt voice.
 
 Generates Chinese (Mandarin) audio via Kokoro KPipeline with the
 zf_xiaoxiao.pt voice (Mandarin Chinese female), applies loudnorm.
 
 Usage:
-    pip install pypinyin  # required for Chinese TTS
+    pip install pypinyin cn2an ordered_set jieba  # required for Chinese TTS
 
     python gen_kokoro_zh.py --text "你好，世界。" --output out.mp3
     python gen_kokoro_zh.py --voice voices/zf_xiaoxiao.pt --text "..." --output out.wav
@@ -18,24 +18,31 @@ import subprocess
 import json
 from pathlib import Path
 
-# Set HF endpoint BEFORE importing kokoro.
-# Windows: use hf-mirror.com (huggingface.co blocked in China)
-# Colab/Linux: use huggingface.co directly (hf-mirror unreliable on Colab)
+# Fix Windows console encoding to avoid UnicodeEncodeError
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+# HF_ENDPOINT: Windows local uses hf-mirror (HuggingFace blocked in China),
+# Colab/Linux uses direct huggingface.co. Allow override via env var.
 if "HF_ENDPOINT" not in os.environ:
     if sys.platform == "win32":
-        os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
+        os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
     else:
-        os.environ['HF_ENDPOINT'] = 'https://huggingface.co'
+        os.environ["HF_ENDPOINT"] = "https://huggingface.co"
 
-# Ensure pypinyin is installed (required by Kokoro's Chinese pipeline)
-try:
-    import pypinyin  # noqa: F401
-except ImportError:
-    print("❌ Missing dependency: pypinyin")
-    print("   Install: pip install pypinyin")
+# Ensure all Chinese pipeline dependencies are installed
+_REQUIRED_MODULES = ["pypinyin", "cn2an", "ordered_set", "jieba"]
+_missing = []
+for _m in _REQUIRED_MODULES:
+    try:
+        __import__(_m)
+    except ImportError:
+        _missing.append(_m)
+if _missing:
+    print("Missing dependencies for Chinese Kokoro TTS:")
+    print(f"   Run: pip install {' '.join(_missing)}")
     sys.exit(1)
 
-# Default voice filename (looked up in HF cache voices dir first, then --voice path)
 DEFAULT_VOICE = "zf_xiaoxiao.pt"
 
 
@@ -47,28 +54,21 @@ def find_voice_in_cache(filename: str) -> str | None:
     for root, _dirs, files in os.walk(cache_dir):
         if filename in files:
             path = os.path.join(root, filename)
-            if os.path.getsize(path) > 1000:  # ignore empty/partial (0-byte) downloads
+            if os.path.getsize(path) > 1000:
                 return path
     return None
 
 
 def download_voice(filename: str, out_dir: str | None = None) -> str:
-    """Download a Kokoro voice .pt file from HF mirror into the Kokoro voices dir.
-
-    Falls back to huggingface.co if mirror fails. Returns the saved file path.
-    """
+    """Download a Kokoro voice .pt file from HF mirror."""
     if out_dir is None:
-        # Default: Kokoro model voices dir in HF cache
         cache_voices = Path(os.path.expanduser(
             "~/.cache/huggingface/hub/models--hexgrad--Kokoro-82M/voices"))
         cache_voices.mkdir(parents=True, exist_ok=True)
         out_dir = str(cache_voices)
-
     dest = os.path.join(out_dir, filename)
     if os.path.exists(dest) and os.path.getsize(dest) > 1000:
         return dest
-
-    # Try mirrors in order
     urls = [
         f"https://hf-mirror.com/hexgrad/Kokoro-82M/resolve/main/voices/{filename}",
         f"https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/voices/{filename}",
@@ -82,20 +82,19 @@ def download_voice(filename: str, out_dir: str | None = None) -> str:
                 data = resp.read()
             if len(data) > 1000:
                 Path(dest).write_bytes(data)
-                print(f"  ✅ Downloaded voice: {dest} ({len(data)//1024}KB)")
+                print(f"  [OK] Downloaded voice: {dest} ({len(data)//1024}KB)")
                 return dest
         except Exception as e:
-            print(f"  ⚠️ Download failed ({url}): {str(e)[:80]}")
+            print(f"  [Warn] Download failed: {str(e)[:80]}")
     raise FileNotFoundError(
-        f"Voice '{filename}' could not be downloaded. Please manually place the .pt "
-        f"file at: {dest}  (or pass --voice /path/to/your.pt)")
+        f"Voice '{filename}' could not be downloaded. "
+        f"Please manually place the .pt file at: {dest}")
 
 
 def resolve_voice(voice: str) -> str:
     """Resolve a voice name/path to a valid .pt file, downloading if needed."""
     if os.path.exists(voice) and os.path.getsize(voice) > 1000:
         return voice
-    # Treat as a filename to find/download
     filename = os.path.basename(voice)
     cached = find_voice_in_cache(filename)
     if cached:
@@ -115,7 +114,7 @@ def get_duration(audio_path: str) -> float:
 
 
 def loudnorm(input_path: str):
-    """Normalize volume with loudnorm (fallback to aac if libmp3lame missing)."""
+    """Normalize volume with loudnorm."""
     norm_path = input_path.replace(".mp3", "_norm.mp3")
     result = subprocess.run(
         ["ffmpeg", "-y", "-i", input_path,
@@ -129,7 +128,7 @@ def loudnorm(input_path: str):
 
 def generate(text: str, voice: str, out_path: str,
              speed: float = 1.0, normalize: bool = True) -> str:
-    """Generate Chinese speech with Kokoro zf_xiaoxiao voice.
+    """Generate Chinese speech with Kokoro Chinese voice.
 
     Args:
         text: Chinese text to speak.
@@ -145,10 +144,7 @@ def generate(text: str, voice: str, out_path: str,
     import soundfile as sf
     import numpy as np
 
-    # Resolve voice file path (search cache first, then download)
     voice_path = resolve_voice(voice)
-
-    # KPipeline with Mandarin Chinese lang code ('z' = zh)
     pipeline = KPipeline(lang_code="z")
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
@@ -162,13 +158,12 @@ def generate(text: str, voice: str, out_path: str,
 
     final_audio = all_audio[0] if len(all_audio) == 1 else np.concatenate(all_audio)
 
-    # Write WAV, then convert to target format via ffmpeg
     wav_path = out_path.rsplit(".", 1)[0] + "_tmp.wav"
     sf.write(wav_path, final_audio, 24000)
 
     if out_path.endswith(".wav"):
         os.replace(wav_path, out_path)
-    else:  # mp3 default
+    else:
         subprocess.run(
             ["ffmpeg", "-y", "-i", wav_path, "-c:a", "libmp3lame", "-b:a", "128k",
              "-ar", "24000", "-ac", "1", out_path],
@@ -179,12 +174,12 @@ def generate(text: str, voice: str, out_path: str,
         loudnorm(out_path)
 
     dur = get_duration(out_path)
-    print(f"✅ Generated: {out_path} ({dur:.1f}s, voice={voice_path})")
+    print(f"Generated: {out_path} ({dur:.1f}s, voice={voice_path})")
     return out_path
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Kokoro Chinese TTS (zf_xiaoxiao)")
+    parser = argparse.ArgumentParser(description="Kokoro Chinese TTS")
     parser.add_argument("--text", default=None, help="Chinese text to speak")
     parser.add_argument("--voice", default=DEFAULT_VOICE,
                         help=f"Voice .pt path or name (default {DEFAULT_VOICE})")
@@ -197,7 +192,7 @@ def main():
     if text is None:
         text = sys.stdin.read().strip()
     if not text:
-        print("❌ No text provided. Use --text or pipe via stdin.")
+        print("No text provided. Use --text or pipe via stdin.")
         sys.exit(1)
 
     generate(text, args.voice, args.output,

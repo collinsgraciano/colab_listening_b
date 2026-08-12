@@ -349,22 +349,23 @@ def compose_listening(
     """Compose final listening practice video.
 
     Args:
+        work_dir: Working directory for temp files and output.
+        clip_paths: List of video clip paths (index 0 = scene/HOOK, 1+ = dialogue groups).
+                    May contain None for failed clips (handled gracefully).
+        timeline: Timeline segments from build_listening_timeline (with audio_dur added).
+        script: Lesson script dict.
+        narration: {"intro": path, "outro": path, "practice_intro": path}.
+        normal_paths: English dialogue audio paths.
+        zh_paths: Chinese dialogue audio paths.
+        scene_img: Scene background image path.
+        srt_dir: Directory for SRT file (cwd for FFmpeg subtitle burn).
+        pad: Audio pad between segments (seconds).
+        progress_cb: callback(percent, message).
         group_info: [{clip_path, audio_path, total_dur, lines}] per group.
-                    When provided, dialogue segments use whole-group audio+clip (no -ss slicing).
-        line_to_group: {line_idx: group_idx} mapping. Used with group_info to skip
-                       lines that belong to an already-processed group.
-        timeline: Timeline segments from build_listening_timeline (with audio_dur added)
-        script: Lesson script dict
-        narration: {"intro": path, "outro": path, "practice_intro": path}
-        normal_paths: English dialogue audio paths
-        zh_paths: Chinese dialogue audio paths
-        scene_img: Scene background image path
-        srt_dir: Directory for SRT file (cwd for FFmpeg subtitle burn)
-        pad: Audio pad between segments (seconds)
-        progress_cb: callback(percent, message)
+        line_to_group: {line_idx: group_idx} mapping for group-based dialogue.
 
     Returns:
-        Path to final video
+        Path to final video.
     """
     def _cb(pct, msg):
         if progress_cb:
@@ -398,6 +399,7 @@ def compose_listening(
     seg_idx = 0
     total_segs = len(timeline)
     processed_groups = set()  # track which groups have been rendered as a single segment
+    skipped_segs = 0  # count skipped segments for accurate progress
 
     for seg in timeline:
         seg_type = seg["type"]
@@ -409,7 +411,7 @@ def compose_listening(
             gi = line_to_group.get(audio_idx)
             if gi is not None and gi in processed_groups:
                 # This line's group already rendered — skip
-                total_segs -= 1
+                skipped_segs += 1
                 continue
             if gi is not None:
                 processed_groups.add(gi)
@@ -448,10 +450,22 @@ def compose_listening(
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                            out_path]
                 r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                if r.returncode != 0:
+                if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
                     print(f"  FFmpeg error group seg {gi}: {r.stderr[-200:]}")
+                    # Fallback: silent segment with scene image to maintain timeline
+                    fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
+                                   "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                                   "-t", f"{group_dur:.3f}", "-vf", "fps=24",
+                                   "-map", "0:v:0", "-map", "1:a:0",
+                                   "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                                   out_path]
+                    r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=60)
+                    if r2.returncode != 0:
+                        print(f"  Fallback also failed: {r2.stderr[-200:]}")
+                        continue
                 segments.append(out_path)
-                _cb(int(seg_idx / total_segs * 80), f"  Segment {seg_idx}/{total_segs} (group {gi})")
+                _cb(int(seg_idx / (total_segs - skipped_segs) * 80), f"  Segment {seg_idx}/{total_segs - skipped_segs} (group {gi})")
                 continue
         d_idx = seg.get("dialogue_idx", -1)
         out_path = str(tmp_dir / f"seg_{seg_idx:03d}.mp4")
@@ -493,7 +507,7 @@ def compose_listening(
             video_src = HOOK_CLIP if HOOK_CLIP and os.path.exists(HOOK_CLIP) else scene_img
             is_static = False
         elif seg_type == "practice_intro":
-            video_src = clip_paths[-1] if clip_paths and len(clip_paths) > 1 else (HOOK_CLIP or scene_img)
+            video_src = clip_paths[0] if clip_paths else (HOOK_CLIP or scene_img)
             is_static = False
         elif seg_type == "outro":
             video_src = HOOK_CLIP if HOOK_CLIP and os.path.exists(HOOK_CLIP) else scene_img
@@ -616,35 +630,81 @@ def compose_listening(
                        out_path]
 
         else:
-            # Dialogue: video clip + audio (whole-clip fallback, no grouping)
-            vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
-            if vid_dur > 0 and audio_dur > 0:
-                vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,fps=24"
-            else:
+            # Dialogue: video clip + audio
+            # 方案 B: grouped dialogue handled above (group_info+line_to_group).
+            # This else branch is the no-grouping fallback (uses whole clip per line).
+            ginfo = None  # group_clip_map no longer used — grouped dialogue handled above
+            if ginfo and ginfo.get("clip_path") and os.path.exists(ginfo["clip_path"]):
+                # Use group clip with accurate seek (-ss AFTER -i for frame-accurate slicing)
+                video_src = ginfo["clip_path"]
+                clip_start = ginfo["clip_start"]
+                clip_segment_dur = ginfo["clip_segment_dur"]
                 vf = "fps=24"
-            if audio_file and os.path.exists(audio_file):
-                cmd = ["ffmpeg", "-y", "-i", video_src, "-i", audio_file,
-                       "-t", f"{duration:.3f}", "-vf", vf,
-                       "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                       "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
-                       out_path]
+                if audio_file and os.path.exists(audio_file):
+                    # -ss after -i = accurate seek (slower but no keyframe alignment issues)
+                    cmd = ["ffmpeg", "-y",
+                           "-i", video_src, "-i", audio_file,
+                           "-ss", f"{clip_start:.3f}", "-t", f"{clip_segment_dur:.3f}",
+                           "-vf", vf,
+                           "-map", "0:v:0", "-map", "1:a:0",
+                           "-t", f"{duration:.3f}",
+                           "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                           "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                           "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
+                           out_path]
+                else:
+                    cmd = ["ffmpeg", "-y",
+                           "-i", video_src,
+                           "-ss", f"{clip_start:.3f}", "-t", f"{clip_segment_dur:.3f}",
+                           "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                           "-vf", vf,
+                           "-map", "0:v:0", "-map", "2:a",
+                           "-t", f"{duration:.3f}",
+                           "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                           "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                           out_path]
             else:
-                cmd = ["ffmpeg", "-y", "-i", video_src,
-                       "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                       "-t", f"{duration:.3f}", "-vf", vf,
-                       "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                       out_path]
+                # Fallback: whole clip behavior (no grouping)
+                vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
+                if vid_dur > 0 and audio_dur > 0:
+                    vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,fps=24"
+                else:
+                    vf = "fps=24"
+                if audio_file and os.path.exists(audio_file):
+                    cmd = ["ffmpeg", "-y", "-i", video_src, "-i", audio_file,
+                           "-t", f"{duration:.3f}", "-vf", vf,
+                           "-map", "0:v:0", "-map", "1:a:0",
+                           "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                           "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                           "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
+                           out_path]
+                else:
+                    cmd = ["ffmpeg", "-y", "-i", video_src,
+                           "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                           "-t", f"{duration:.3f}", "-vf", vf,
+                           "-map", "0:v:0", "-map", "1:a:0",
+                           "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                           "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                           out_path]
 
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if r.returncode != 0:
+        if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
             print(f"  FFmpeg error seg {seg_idx}: {r.stderr[-200:]}")
+            # Fallback: silent segment with scene image
+            fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
+                           "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                           "-t", f"{duration:.3f}", "-vf", "fps=24",
+                           "-map", "0:v:0", "-map", "1:a:0",
+                           "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                           "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                           out_path]
+            r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=60)
+            if r2.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+                print(f"  Fallback also failed, skipping segment: {r2.stderr[-200:]}")
+                continue
         segments.append(out_path)
-        _cb(int(seg_idx / total_segs * 80),
-            f"  Segment {seg_idx}/{total_segs} ({seg_type})")
+        _cb(int(seg_idx / (total_segs - skipped_segs) * 80),
+            f"  Segment {seg_idx}/{total_segs - skipped_segs} ({seg_type})")
 
     # --- Concat all segments ---
     _cb(80, "Concatenating segments...")
@@ -654,11 +714,10 @@ def compose_listening(
             f.write(f"file '{s}'\n")
 
     no_sub = str(vid_dir / "final_no_sub.mp4")
-    # Use re-encode (not -c copy) to ensure consistent timestamps across segments
+    # Use -c copy (all segments already have uniform format: libx264/yuv420p/24fps/aac/44100Hz/stereo)
     result = subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
-        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
-        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2", no_sub,
+        "-c", "copy", no_sub,
     ], capture_output=True)
     if result.returncode != 0:
         raise RuntimeError(f"Concat failed: {result.stderr.decode()[-2000:]}")

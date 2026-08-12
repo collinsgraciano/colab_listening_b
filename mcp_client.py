@@ -1,32 +1,36 @@
-#!/usr/bin/env python3
-"""TJGenerators MCP client — Colab-compatible version.
-
-Changes from Windows version:
-- TOKEN is passed as argument, not read from ~/.codely-cli/mcp-oauth-tokens.json
-- No sys.stdout.reconfigure (Linux doesn't need it)
-- Uses /content/ paths on Colab
+"""TJGenerators MCP client — calls MCP server directly via HTTP JSON-RPC.
 
 Usage:
-    from mcp_client import initialize, call_tool, parse_task_id, poll_task, download_file
-    initialize(token="your_oauth_token")
+    from mcp_client import initialize, call_tool, poll_task
+    initialize()
+    result = call_tool("generate_image", {"prompt": "...", "provider": "frontier"})
+    task_id = parse_task_id(result)
+    data = poll_task(task_id, interval=10)
+    url = data.get("url")
 """
 import sys
+import os
 import json
 import time
 import re
 import urllib.request
 import urllib.error
 
+sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+
 MCP_URL = "https://ai-generator.tuanjie.cn/mcp"
-TOKEN = ""  # Set via initialize(token=...) or set_mcp_token()
+# Token from C:\Users\Administrator\.codely-cli\mcp-oauth-tokens.json
+import os
+_TOKEN_FILE = os.path.join(os.environ.get("USERPROFILE", ""), ".codely-cli", "mcp-oauth-tokens.json")
+try:
+    with open(_TOKEN_FILE, encoding="utf-8") as f:
+        _tokens = json.load(f)
+    TOKEN = next(t["token"]["accessToken"] for t in _tokens if t["serverName"] == "TJGenerators")
+except Exception:
+    TOKEN = ""  # Fallback: user must set manually
+
 _session_id = None
 _msg_id = 0
-
-
-def set_mcp_token(token: str):
-    """Set the MCP OAuth token manually (required on Colab)."""
-    global TOKEN
-    TOKEN = token
 
 
 def _next_id():
@@ -78,16 +82,21 @@ def mcp_notify(method, params=None):
         pass
 
 
-def initialize(token: str = None):
-    """Initialize MCP session. Pass token on Colab (no local token file)."""
+def initialize(token=None):
+    """Initialize MCP session.
+
+    On Colab (or when token is passed), use the provided token.
+    On Windows local, token auto-detected from ~/.codely-cli/mcp-oauth-tokens.json.
+    """
+    global TOKEN
     if token:
-        set_mcp_token(token)
+        TOKEN = token
     if not TOKEN:
-        raise RuntimeError("No MCP token. Call initialize(token='...') or set_mcp_token('...')")
+        raise RuntimeError("No MCP token. Pass token to initialize(token='...') or set MCP_TOKEN env var.")
     result = mcp_call("initialize", {
         "protocolVersion": "2024-11-05",
         "capabilities": {},
-        "clientInfo": {"name": "colab-listening", "version": "1.0"},
+        "clientInfo": {"name": "codely-cli", "version": "1.0"},
     })
     mcp_notify("notifications/initialized")
     return result
@@ -116,7 +125,10 @@ def parse_task_id(result):
 
 
 def poll_task(task_id, interval=40, max_wait=600):
-    """Poll check_task until completed or failed. Returns dict with 'status' and 'url'."""
+    """Poll check_task until completed or failed. Returns dict containing:
+    - status, url (success)
+    - status, raw (full raw check_task response + error message on failure)
+    """
     elapsed = 0
     while elapsed < max_wait:
         result = call_tool("check_task", {"task_id": task_id})
@@ -127,20 +139,32 @@ def poll_task(task_id, interval=40, max_wait=600):
 
         content = result["result"].get("content", [])
         task_data = {}
+        # Keep the FULL raw response for debugging
+        task_data["raw_response"] = json.dumps(result, ensure_ascii=False)
 
-        # 1. Try resource block
+        # 1. Try resource block (contains JSON with output URLs + error info)
         for item in content:
             if item.get("type") == "resource":
                 res_text = item.get("resource", {}).get("text", "")
                 try:
                     res_json = json.loads(res_text)
                     task_data["status"] = res_json.get("status", "")
+                    task_data["raw_json"] = json.dumps(res_json, ensure_ascii=False)
                     out = res_json.get("output") or {}
                     data = out.get("data") or {}
+                    # Preserve error message if present
+                    if res_json.get("error"):
+                        task_data["error"] = res_json["error"]
+                    elif data.get("error"):
+                        task_data["error"] = data["error"]
+                    elif data.get("message"):
+                        task_data["error"] = data["message"]
+                    # Video URL: output.data.result.video_url
                     result_obj = data.get("result") or {}
                     url = result_obj.get("video_url", "") or result_obj.get("image_url", "")
                     if url:
                         task_data["url"] = url
+                    # Image URL: output.data.imageUrls[0] (array)
                     if "url" not in task_data:
                         img_urls = data.get("imageUrls") or []
                         if img_urls and isinstance(img_urls, list) and img_urls[0]:
@@ -149,11 +173,12 @@ def poll_task(task_id, interval=40, max_wait=600):
                 except json.JSONDecodeError:
                     pass
 
-        # 2. Fall back to text block
+        # 2. Also check text block for URL (Markdown ![](URL)) — even if resource block was parsed
         if "url" not in task_data:
             for item in content:
                 if item.get("type") == "text":
                     text = item.get("text", "")
+                    task_data["raw_text"] = text
                     if not task_data.get("status"):
                         if "completed" in text.lower() or "已完成" in text:
                             task_data["status"] = "completed"
@@ -161,6 +186,7 @@ def poll_task(task_id, interval=40, max_wait=600):
                             task_data["status"] = "running"
                         elif "failed" in text.lower() or "失败" in text:
                             task_data["status"] = "failed"
+                    # Extract URL from Markdown
                     m = re.search(r"!\[.*?\]\((https?://[^\s)]+)\)", text)
                     if m:
                         task_data["url"] = m.group(1)
@@ -177,7 +203,7 @@ def poll_task(task_id, interval=40, max_wait=600):
         if status == "completed":
             return task_data
         if status == "failed":
-            print(f"  FAILED: {json.dumps(task_data, ensure_ascii=False)[:500]}")
+            print(f"  FAILED: {json.dumps(task_data, ensure_ascii=False)[:1000]}")
             return task_data
 
         elapsed += interval
@@ -192,10 +218,21 @@ def download_file(url, dest):
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=120) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            if "text/html" in content_type:
+                print(f"  Download failed: got HTML page (not a file) from {url[:80]}")
+                return False
             with open(dest, "wb") as f:
                 f.write(resp.read())
-        import os
         return os.path.getsize(dest) > 1000
     except Exception as e:
         print(f"  Download failed: {e}")
         return False
+
+
+if __name__ == "__main__":
+    initialize()
+    print(f"Session: {_session_id}")
+    tools = call_tool("tools/list", {})
+    for t in tools.get("result", {}).get("tools", []):
+        print(f"  - {t['name']}")

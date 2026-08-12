@@ -17,9 +17,8 @@ from dataclasses import dataclass
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
-# Set HF endpoint BEFORE any kokoro import.
-# Windows: use hf-mirror.com (huggingface.co blocked in China)
-# Colab/Linux: use huggingface.co directly (hf-mirror unreliable on Colab)
+# HF_ENDPOINT: Windows local uses hf-mirror (HuggingFace blocked in China),
+# Colab/Linux uses direct huggingface.co. Allow override via env var.
 if "HF_ENDPOINT" not in os.environ:
     if sys.platform == "win32":
         os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
@@ -150,18 +149,28 @@ class TTSEngine:
 
     @classmethod
     def _get_kokoro(cls):
-        """Lazy-init and cache the English KPipeline (lang_code='a')."""
+        """Lazy-init and cache the English KPipeline (lang_code='a').
+        Raises RuntimeError if model fails to load.
+        """
         if cls._kokoro_pipeline is None:
             from kokoro import KPipeline
-            cls._kokoro_pipeline = KPipeline(lang_code='a')  # American English
+            try:
+                cls._kokoro_pipeline = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M')
+            except Exception as e:
+                raise RuntimeError(f"Kokoro English model failed to load: {e}") from e
         return cls._kokoro_pipeline
 
     @classmethod
     def _get_kokoro_zh(cls):
-        """Lazy-init and cache the Mandarin Chinese KPipeline (lang_code='z')."""
+        """Lazy-init and cache the Mandarin Chinese KPipeline (lang_code='z').
+        Raises RuntimeError if model fails to load.
+        """
         if cls._kokoro_zh_pipeline is None:
             from kokoro import KPipeline
-            cls._kokoro_zh_pipeline = KPipeline(lang_code='z')  # Mandarin Chinese
+            try:
+                cls._kokoro_zh_pipeline = KPipeline(lang_code='z', repo_id='hexgrad/Kokoro-82M')
+            except Exception as e:
+                raise RuntimeError(f"Kokoro Chinese model failed to load: {e}") from e
         return cls._kokoro_zh_pipeline
 
     @staticmethod
@@ -275,14 +284,14 @@ class TTSEngine:
         from edge_tts.exceptions import NoAudioReceived
 
         Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-        edge_voice = voice or "zh-CN-XiaoxiaoNeural"
+        edge_voice = voice if voice else "zh-CN-XiaoxiaoNeural"
 
         async def _gen_edge():
             comm = edge_tts.Communicate(text, edge_voice, rate=rate)
             await asyncio.wait_for(comm.save(out_path), timeout=timeout)
 
         try:
-            loop = asyncio.get_running_loop()
+            loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -299,7 +308,7 @@ class TTSEngine:
                     self._loudnorm(out_path)
                     return self.get_duration(out_path)
                 last_error = f"Empty audio (attempt {attempt+1})"
-            except (NoAudioReceived, asyncio.TimeoutError, Exception) as e:
+            except Exception as e:
                 last_error = e
                 print(f"    [edge-tts retry {attempt+1}/{max_retries}] {edge_voice} failed: {str(e)[:60]}")
                 if attempt < max_retries - 1:
@@ -365,10 +374,13 @@ def build_voice_map(script: dict) -> dict:
 def get_zh_voice(speaker: str, script: dict) -> str:
     """Get Chinese edge-tts voice based on speaker gender.
 
-    male -> zh-CN-YunxiNeural, female -> zh-CN-XiaoxiaoNeural
+    male   -> zh-CN-YunxiNeural
+    female -> zh-CN-XiaoxiaoNeural
     """
-    gender_key = "char_a_gender" if speaker == "char_a" else "char_b_gender"
-    gender = script.get(gender_key, "female").lower()
+    if speaker == "char_a":
+        gender = script.get("char_a_gender", "male").lower()
+    else:
+        gender = script.get("char_b_gender", "female").lower()
     if gender == "male":
         return "zh-CN-YunxiNeural"
     return "zh-CN-XiaoxiaoNeural"

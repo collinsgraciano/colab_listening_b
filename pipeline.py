@@ -15,10 +15,10 @@ Steps:
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 import threading
-import subprocess
 from pathlib import Path
 
 # Add scripts directory to path
@@ -31,18 +31,54 @@ from tts_engine import TTSEngine, build_voice_map, get_zh_voice
 from timeline import build_listening_timeline, build_srt_from_timeline
 from video_compose import compose_listening
 from grouping_b import build_dialogue_groups, merge_group_prompt
+from topic_manager import pick_random_topic
 
 
-def _get_audio_duration(path):
+def _validate_script(script: dict, num_lines: int) -> tuple[bool, str]:
+    """Validate a generated script. Returns (is_valid, error_message)."""
+    dialogue = script.get("dialogue", [])
+    if len(dialogue) < num_lines:
+        return False, f"Dialogue count {len(dialogue)} < required {num_lines}"
+    for i, line in enumerate(dialogue):
+        text = line.get("text", "").strip()
+        if not text:
+            return False, f"Dialogue line {i} has empty 'text'"
+        if not line.get("zh", "").strip():
+            return False, f"Dialogue line {i} has empty 'zh'"
+        if not line.get("phonetic", "").strip():
+            return False, f"Dialogue line {i} has empty 'phonetic'"
+        if not line.get("speaker", ""):
+            return False, f"Dialogue line {i} has empty 'speaker'"
+    return True, ""
+
+
+def _generate_script_with_retry(topic, cefr, lessons_dir, num_lines, max_attempts=5) -> dict:
+    """Generate and validate script, retrying on failure."""
+    for attempt in range(max_attempts):
+        try:
+            print(f"  [Script] Attempt {attempt+1}/{max_attempts}...")
+            script = generate_listening_script(topic, cefr, lessons_dir=lessons_dir,
+                                               num_lines=num_lines)
+            valid, msg = _validate_script(script, num_lines)
+            if valid:
+                print(f"  [Script] Valid: {len(script['dialogue'])} lines")
+                return script
+            print(f"  [Script] Invalid: {msg}")
+        except Exception as e:
+            print(f"  [Script] Error: {e}")
+        if attempt < max_attempts - 1:
+            time.sleep(3)
+    raise RuntimeError(f"Script generation failed after {max_attempts} attempts")
+
+
+def _get_audio_duration(path: str) -> float:
     """Get audio duration via ffprobe."""
-    import subprocess as _sp
     try:
-        return float(_sp.check_output(
+        return float(subprocess.check_output(
             ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
              "-of", "csv=p=0", path], text=True).strip())
     except Exception:
         return 0.0
-from topic_manager import pick_random_topic
 
 
 def _generate_video_clips(video_tasks, clips_dir, clip_paths):
@@ -66,9 +102,15 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths):
                     "duration": task["duration"],
                     "ratio": "16:9",
                     "resolution": "720p",
-                    "generate_audio": idx == 0,
+                    "generate_audio": task.get("generate_audio", False),
                 })
                 task_id = parse_task_id(result)
+                if not task_id:
+                    print(f"    [Video] WARNING: no task_id for {task['filename']}")
+                    if result and "result" in result:
+                        print(f"    [Video] API response content: {json.dumps(result['result'].get('content', []), ensure_ascii=False)[:1000]}")
+                    elif result:
+                        print(f"    [Video] Full API response: {json.dumps(result, ensure_ascii=False)[:1000]}")
                 task_ids.append((idx, task_id, task["filename"]))
             except Exception as e:
                 print(f"    [Video] ERROR creating task: {e}")
@@ -95,33 +137,94 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths):
                     else:
                         print(f"    [Video] ERROR: Downloaded file still too small")
             else:
-                print(f"    [Video] ERROR: No video URL")
+                print(f"    [Video] ERROR: No video URL. Status={data.get('status')}")
+                raw_json = data.get("raw_json", "")
+                raw_text = data.get("raw_text", "")
+                error_msg = data.get("error", "")
+                if error_msg:
+                    print(f"    [Video] Error message: {error_msg}")
+                if raw_json:
+                    print(f"    [Video] Raw resource JSON: {raw_json[:1000]}")
+                if raw_text and not raw_json:
+                    print(f"    [Video] Raw text block: {raw_text[:1000]}")
 
-    # Retry failed clips one by one
+    # Retry failed clips one by one — each retry creates a BRAND NEW video task
+    MAX_RETRY = 5
     failed = [i for i, p in enumerate(clip_paths) if p is None]
     for idx in failed:
-        print(f"  [Video] Retrying clip {idx+1}...")
         task = video_tasks[idx]
-        try:
-            result = call_tool("generate_video", {
-                "mode": "reference_image",
-                "image_urls": task["image_urls"],
-                "prompt": task["prompt"],
-                "duration": task["duration"],
-                "ratio": "16:9",
-                "resolution": "720p",
-                "generate_audio": idx == 0,
-            })
-            task_id = parse_task_id(result)
-            data = poll_task(task_id, interval=40)
-            url = data.get("url", "")
-            if url:
+        attempt = 0
+        while attempt < MAX_RETRY:
+            attempt += 1
+            print(f"  [Video] Retrying clip {idx+1} ({task['filename']}) attempt {attempt}/{MAX_RETRY}...")
+            try:
+                # 1. Create a NEW video generation request (not re-querying old one)
+                result = call_tool("generate_video", {
+                    "mode": "reference_image",
+                    "image_urls": task["image_urls"],
+                    "prompt": task["prompt"],
+                    "duration": task["duration"],
+                    "ratio": "16:9",
+                    "resolution": "720p",
+                    "generate_audio": task.get("generate_audio", False),
+                })
+                # 2. Extract task_id — if empty, the request itself failed
+                task_id = parse_task_id(result)
+                if not task_id:
+                    print(f"    [Video] FAILED: could not create task (parse_task_id returned empty)")
+                    # Print the actual request parameters
+                    print(f"    [Video] Request params:")
+                    print(f"      mode: reference_image")
+                    print(f"      image_urls: {task['image_urls'][:120]}...")
+                    print(f"      prompt: {task['prompt'][:200]}...")
+                    print(f"      duration: {task['duration']}")
+                    print(f"      ratio: 16:9")
+                    print(f"      generate_audio: True")
+                    # Print the raw API response
+                    if result and "result" in result:
+                        raw_content = json.dumps(result["result"].get("content", []), ensure_ascii=False)[:1500]
+                        print(f"    [Video] API response content: {raw_content}")
+                    elif result:
+                        print(f"    [Video] Full API response: {json.dumps(result, ensure_ascii=False)[:1500]}")
+                    time.sleep(10)
+                    continue  # ← creates another NEW task
+                # 3. Poll the NEW task until it completes or fails
+                data = poll_task(task_id, interval=40)
+                url = data.get("url", "")
+                if not url:
+                    print(f"    [Video] FAILED: task {task_id[:16]}... returned no URL. Status={data.get('status')}")
+                    # Print the FULL raw error info
+                    raw_json = data.get("raw_json", "")
+                    raw_text = data.get("raw_text", "")
+                    raw_response = data.get("raw_response", "")
+                    error_msg = data.get("error", "")
+                    if error_msg:
+                        print(f"    [Video] Error message: {error_msg}")
+                    if raw_json:
+                        print(f"    [Video] Raw resource JSON: {raw_json[:1000]}")
+                    if raw_text and not raw_json:
+                        print(f"    [Video] Raw text block: {raw_text[:1000]}")
+                    if raw_response and not raw_json and not raw_text:
+                        print(f"    [Video] Full check_task response: {raw_response[:1000]}")
+                    time.sleep(10)
+                    continue  # ← creates another NEW task
+                # 4. Download the result
                 dest = str(clips_dir / task["filename"])
                 if download_file(url, dest) and os.path.getsize(dest) > 500000:
                     clip_paths[idx] = dest
                     print(f"    [Video] Retry successful: {task['filename']}")
-        except Exception as e:
-            print(f"    [Video] Retry failed: {e}")
+                    break
+                else:
+                    print(f"    [Video] FAILED: file too small ({os.path.getsize(dest)} bytes), creating new task...")
+                    time.sleep(10)
+                    continue
+            except Exception as e:
+                print(f"    [Video] FAILED (attempt {attempt}): {type(e).__name__}: {e}")
+                time.sleep(10)
+                continue
+
+        if clip_paths[idx] is None:
+            print(f"    [Video] GIVING UP on clip {idx+1} after {MAX_RETRY} retries: {task['filename']}")
 
     total = sum(1 for p in clip_paths if p is not None)
     print(f"  [Video] Total clips downloaded: {total}/{len(video_tasks)}")
@@ -140,12 +243,9 @@ def _generate_tts(script, dialogue, audio_dir, results):
     for name, text in [("intro", intro_text), ("outro", outro_text), ("practice_intro", practice_intro_text)]:
         if text:
             path = str(audio_dir / f"{name}.mp3")
-            try:
-                dur = tts.synth_english(text, "af_sky", path, rate="+0%")
-                narration[name] = path
-                print(f"  [TTS] {name}: {dur:.1f}s")
-            except Exception as e:
-                print(f"  [TTS] {name} FAILED: {e}")
+            dur = tts.synth_english(text, "af_sky", path, rate="+0%")
+            narration[name] = path
+            print(f"  [TTS] {name}: {dur:.1f}s")
 
     # Dialogue English (character voices, -15% slow)
     normal_paths = []
@@ -155,11 +255,7 @@ def _generate_tts(script, dialogue, audio_dir, results):
         speaker = line.get("speaker", "char_a")
         voice = voice_map.get(speaker, "af_sarah")
         path = str(audio_dir / f"dialogue_{i}.mp3")
-        try:
-            dur = tts.synth_english(text, voice, path, rate="-15%")
-        except Exception as e:
-            print(f"  [TTS] dialogue_{i} FAILED, using fallback: {e}")
-            dur = max(len(text) * 0.07, 2.0)
+        dur = tts.synth_english(text, voice, path, rate="-15%")
         normal_paths.append(path)
         dialogue_durations.append(dur)
         print(f"  [TTS] dialogue_{i}: {dur:.1f}s ({voice})")
@@ -174,13 +270,9 @@ def _generate_tts(script, dialogue, audio_dir, results):
         speaker = line.get("speaker", "char_a")
         voice = get_zh_voice(speaker, script)
         path = str(audio_dir / f"zh_{i}.mp3")
-        try:
-            # synth_chinese tries edge-tts first (5 retries, 30s timeout),
-            # then falls back to Kokoro automatically
-            dur = tts.synth_chinese(text, voice, path, rate="-10%")
-        except Exception as e:
-            print(f"  [TTS] zh_{i} ALL FAILED (edge-tts + Kokoro): {e}")
-            dur = max(len(text) * 0.15, 2.0)
+        # synth_chinese tries edge-tts first (5 retries, 30s timeout),
+        # then falls back to Kokoro automatically. Both can raise.
+        dur = tts.synth_chinese(text, voice, path, rate="-10%")
         zh_paths.append(path)
         print(f"  [TTS] zh_{i}: {dur:.1f}s")
 
@@ -202,8 +294,17 @@ def main():
     parser.add_argument("--lessons-dir", default=None, help="Lessons dir for anti-duplicate check")
     parser.add_argument("--topics-file", default=str(Path(__file__).parent / "topics.json"), help="Path to topics.json")
     parser.add_argument("--used-topics-file", default=str(Path(__file__).parent / "used_topics.json"), help="Path to used_topics.json")
-    parser.add_argument("--mcp-token", required=True, help="TJGenerators MCP OAuth token")
+    parser.add_argument("--num-lines", type=int, default=18, help="Number of dialogue lines (default 18)")
+    parser.add_argument("--mcp-token", default=None, help="TJGenerators MCP OAuth token (optional on Windows, required on Colab)")
+    parser.add_argument("--api-key", default=None, help="SenseNova API key (or set SENSENOVA_API_KEY env var)")
     args = parser.parse_args()
+
+    # Set API key from arg if provided
+    if args.api_key:
+        os.environ["SENSENOVA_API_KEY"] = args.api_key
+    if not os.environ.get("SENSENOVA_API_KEY"):
+        print("ERROR: SENSENOVA_API_KEY not set. Pass --api-key or set env var.")
+        sys.exit(1)
 
     # Resolve topic: use --topic if given, otherwise pick randomly from topics.json
     if args.topic:
@@ -228,10 +329,11 @@ def main():
     for d in [img_dir, clips_dir, audio_dir, sub_dir, vid_dir]:
         d.mkdir(parents=True, exist_ok=True)
 
-    # ===== Step 0: Generate script =====
+    # ===== Step 0: Generate script (with validation + retry) =====
     print("=" * 60)
     print("Step 0: Generating script via LLM (SenseNova DeepSeek V4 Flash)...")
-    script = generate_listening_script(args.topic, args.cefr, lessons_dir=args.lessons_dir)
+    script = _generate_script_with_retry(args.topic, args.cefr, args.lessons_dir,
+                                         args.num_lines)
     script_path = work_dir / "script.json"
     script_path.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  Script saved: {script_path}")
@@ -272,6 +374,7 @@ def main():
 
     # Generate images in main thread (TTS runs concurrently)
     image_urls = {}
+    image_failed = False
     for prompt, filename in image_prompts:
         print(f"  [Image] Generating: {filename}...")
         result = call_tool("generate_image", {
@@ -290,7 +393,14 @@ def main():
             image_urls[filename] = url
             print(f"    [Image] Downloaded: {dest}")
         else:
-            print(f"    [Image] ERROR: No URL for {filename}")
+            print(f"    [Image] FATAL: No URL for {filename}")
+            image_failed = True
+
+    if image_failed:
+        missing = [fn for fn, _ in image_prompts if fn not in image_urls]
+        print(f"  [Image] ABORTING: Missing required images: {missing}")
+        tts_thread.join(timeout=5)
+        sys.exit(1)
 
     print("  [Image] All images done. Waiting for TTS...")
 
@@ -318,14 +428,15 @@ def main():
     video_tasks = []
     video_tasks.append({
         "image_urls": scene_url,
-        "prompt": f"{scene} interior, slow camera pan, establishing shot, no characters, 3D cartoon style. The video MUST closely reference the uploaded reference image.",
+        "prompt": f"{scene} interior, slow camera pan, establishing shot, no characters, 3D cartoon style. The video MUST closely reference the uploaded reference image. CRITICAL: do NOT show any characters in this establishing shot.",
         "filename": "clip_0.mp4",
         "duration": 5,  # scene pan: 5s fixed
+        "generate_audio": True,  # clip_0 generates ambient sound
     })
     for gi, group in enumerate(groups):
         # Use combined character-scene image as reference (both characters in one image)
         combined_prompt = merge_group_prompt(group, dialogue)
-        video_prompt = f"{scene} interior. {combined_prompt} 3D cartoon style. The video MUST closely reference the uploaded reference image — the characters' appearance, clothing, and the scene must match the reference image exactly."
+        video_prompt = f"{scene} interior. {combined_prompt} 3D cartoon style. The video MUST closely reference the uploaded reference image — the characters' appearance, clothing, and the scene must match the reference image exactly. CRITICAL: only ONE instance of each character should appear on screen — do NOT create duplicate characters or clones. Each character appears exactly once, no mirror images, no doubling."
         # Dynamic duration: match group's total TTS audio + pad between/after lines
         # Each line has pad seconds of silence after it, so total = sum(audio_dur) + n_lines * pad
         n_lines_in_group = len(group["lines"])
@@ -336,6 +447,7 @@ def main():
             "prompt": video_prompt,
             "filename": f"clip_{gi+1}.mp4",
             "duration": group_dur,
+            "generate_audio": False,  # group clips: audio overlaid from TTS
         })
 
     # Start video generation in a thread (TTS may still be running)
@@ -352,13 +464,14 @@ def main():
     video_thread.join()
     print("  >> Video clips done.")
 
-    # Collect results
+    # Collect results — keep None entries to preserve index alignment
     narration = tts_results.get("narration", {})
     normal_paths = tts_results.get("normal_paths", [])
     dialogue_durations = tts_results.get("dialogue_durations", [])
     zh_paths = tts_results.get("zh_paths", [])
-    clip_paths_final = [p for p in clip_paths if p is not None]
-    print(f"  Clips: {len(clip_paths_final)}/{len(video_tasks)}, TTS: {len(normal_paths)} EN + {sum(1 for p in zh_paths if p)} ZH")
+    clip_paths_final = clip_paths  # preserve index alignment for group_info
+    ok_count = sum(1 for p in clip_paths if p is not None)
+    print(f"  Clips: {ok_count}/{len(video_tasks)}, TTS: {len(normal_paths)} EN + {sum(1 for p in zh_paths if p)} ZH")
 
     # Build group info: concat each group's TTS audio into a single file
     # Insert pad seconds of silence between lines so audio timeline matches SRT timeline.
@@ -379,46 +492,32 @@ def main():
             continue
 
         if n_lines == 1:
-            # Single line: just copy
+            # Single line: just re-encode to standardize format
             subprocess.run(
                 ["ffmpeg", "-y", "-i", lines_audio[0],
                  "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                  group_audio_path],
                 capture_output=True, timeout=30)
         else:
-            # Multiple lines: insert pad silence between each + pad at end
-            # Build filter: [0:a][silence0][1:a][silence1]...[Na]concat=N+(N-1):v=0:a=1
+            # Multiple lines: pad each with silence, then concat — single ffmpeg command
             inputs = []
             for la in lines_audio:
                 inputs.extend(["-i", la])
-            # Build filter_complex: adelay for silence, then concat
-            # Simpler approach: use anullsrc + concat demuxer
-            concat_input = str(audio_dir / f"group_audio_{gi}_list.txt")
-            silence_files = []
-            with open(concat_input, "w", encoding="utf-8") as f:
-                for j, la in enumerate(lines_audio):
-                    f.write(f"file '{la}'\n")
-                    # Add silence after each line (including last, to match timeline pad)
-                    sil_path = str(audio_dir / f"silence_{gi}_{j}.mp3")
-                    subprocess.run(
-                        ["ffmpeg", "-y", "-f", "lavfi", "-i",
-                         f"anullsrc=stereo:44100", "-t", f"{args.pad}",
-                         "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                         sil_path],
-                        capture_output=True, timeout=10)
-                    silence_files.append(sil_path)
-                    f.write(f"file '{sil_path}'\n")
+            filter_parts = []
+            for j in range(n_lines):
+                line_idx = group["lines"][j]
+                line_dur = dialogue_durations[line_idx] if line_idx < len(dialogue_durations) else 3.0
+                pad_dur = line_dur + args.pad
+                filter_parts.append(f"[{j}:a]apad=whole_dur={pad_dur:.3f}[a{j}]")
+            concat_inputs = "".join(f"[a{j}]" for j in range(n_lines))
+            filter_parts.append(f"{concat_inputs}concat=n={n_lines}:v=0:a=1[a]")
+            filter_complex = ";".join(filter_parts)
             subprocess.run(
-                ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_input,
+                ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_complex,
+                 "-map", "[a]",
                  "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                  group_audio_path],
-                capture_output=True, timeout=30)
-            # Cleanup silence files
-            for sf in silence_files:
-                try:
-                    os.remove(sf)
-                except OSError:
-                    pass
+                capture_output=True, timeout=60)
 
         if os.path.exists(group_audio_path) and os.path.getsize(group_audio_path) > 1000:
             group_total_dur = _get_audio_duration(group_audio_path)

@@ -65,34 +65,6 @@ def build_dialogue_groups(dialogue: list[dict], dialogue_durations: list[float],
     return groups
 
 
-def compute_line_slices(line_durations: list[float], group_total: float,
-                        clip_duration: float, lines: list[int]) -> dict:
-    """Compute per-line clip slice offsets within a group's clip.
-
-    Args:
-        line_durations: TTS audio durations indexed by absolute dialogue line index.
-        group_total: sum of TTS audio durations for this group.
-        clip_duration: original clip length (e.g. 15s).
-        lines: absolute dialogue line indices in this group.
-
-    Returns:
-        dict mapping line_idx -> {"clip_start": float, "clip_segment_dur": float}
-    """
-    slices = {}
-    cumulative = 0.0
-    total = group_total if group_total > 0 else 1.0
-    for line_idx in lines:
-        line_dur = line_durations[line_idx] if line_idx < len(line_durations) else 0.0
-        clip_start = (cumulative / total) * clip_duration
-        clip_segment_dur = (line_dur / total) * clip_duration
-        slices[line_idx] = {
-            "clip_start": clip_start,
-            "clip_segment_dur": clip_segment_dur,
-        }
-        cumulative += line_dur
-    return slices
-
-
 def merge_group_prompt(group: dict, dialogue: list[dict]) -> str:
     """Merge all video_prompts from a group's lines into one continuous prompt.
 
@@ -110,40 +82,6 @@ def merge_group_prompt(group: dict, dialogue: list[dict]) -> str:
         if p:
             parts.append(p)
     return " ".join(parts)
-
-
-def get_group_image_urls(group: dict, char_a_url: str, char_b_url: str,
-                         scene_url: str = "") -> str:
-    """Build comma-separated image_urls for a group, including both characters.
-
-    Seedance2 supports up to 9 reference images. We pass both character images
-    so the video generation knows what both look like.
-
-    Args:
-        group: group dict (has 'speakers' list).
-        char_a_url: CDN URL for character A design image.
-        char_b_url: CDN URL for character B design image.
-        scene_url: optional scene URL (can be prepended for context).
-
-    Returns:
-        Comma-separated string of image URLs.
-    """
-    urls = []
-    has_a = "char_a" in group.get("speakers", [])
-    has_b = "char_b" in group.get("speakers", [])
-
-    if has_a and char_a_url:
-        urls.append(char_a_url)
-    if has_b and char_b_url:
-        urls.append(char_b_url)
-    # If neither speaker found, fall back to both
-    if not urls:
-        if char_a_url:
-            urls.append(char_a_url)
-        if char_b_url:
-            urls.append(char_b_url)
-
-    return ",".join(urls)
 
 
 if __name__ == "__main__":

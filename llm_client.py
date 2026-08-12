@@ -1,22 +1,24 @@
 """Standalone LLM client for listening video script generation.
 
 Uses SenseNova DeepSeek V4 Flash (OpenAI-compatible API).
-Colab-compatible: no Windows-specific code.
+No external project imports.
 """
 import json
 import re
 import os
+import sys
 import urllib.request
 import urllib.error
 from pathlib import Path
 
 # SenseNova API (default and only LLM backend)
 SENSENOVA_BASE = os.environ.get("SENSENOVA_BASE", "https://token.sensenova.cn/v1")
-SENSENOVA_API_KEY = os.environ.get("SENSENOVA_API_KEY", "sk-8Tr86c17YvA5jBEoem2uYYAQGXGzmpDU")
+SENSENOVA_API_KEY = os.environ.get("SENSENOVA_API_KEY", "")
 SENSENOVA_MODEL = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
 
 
-def _chat(messages, temperature=0.8, timeout=180, max_tokens=8192):
+def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
+          max_tokens: int = 8192) -> str:
     """Call SenseNova LLM chat completion, return content string."""
     body = {
         "model": SENSENOVA_MODEL,
@@ -41,8 +43,9 @@ def _chat(messages, temperature=0.8, timeout=180, max_tokens=8192):
         raise RuntimeError(f"LLM HTTP {e.code}: {err}") from e
 
 
-def _repair_truncated_json(text):
+def _repair_truncated_json(text: str) -> str:
     """Attempt to repair truncated JSON by closing open strings, arrays, and objects."""
+    # Count unmatched braces/brackets
     in_string = False
     escape = False
     stack = []
@@ -68,27 +71,32 @@ def _repair_truncated_json(text):
                 if stack and stack[-1] == c:
                     stack.pop()
         i += 1
+    # If we're in an unterminated string, close it
     if in_string:
         text += '"'
+    # Remove trailing comma if present
     text = re.sub(r',\s*$', '', text.strip())
+    # Close all open structures
     while stack:
         text += stack.pop()
     return text
 
 
-def _extract_json(text):
+def _extract_json(text: str) -> dict:
     """Extract JSON from LLM response (handles markdown fences + truncated JSON)."""
     text = re.sub(r"^```(?:json)?\s*", "", text.strip())
     text = re.sub(r"\s*```$", "", text.strip())
     try:
         return json.loads(text)
     except json.JSONDecodeError:
+        # Try repairing truncated JSON
         repaired = _repair_truncated_json(text)
         return json.loads(repaired)
 
 
-def _build_listening_prompt(topic, cefr, used_dialogues=None):
-    """Build prompt for listening-practice lesson (18 lines + IPA + 繁中)."""
+def _build_listening_prompt(topic: str, cefr: str, used_dialogues: list[str] = None,
+                            num_lines: int = 18) -> str:
+    """Build prompt for listening-practice lesson (num_lines + IPA + 繁中)."""
     used_hint = ""
     if used_dialogues:
         used_hint = f"""
@@ -112,7 +120,7 @@ CONTENT REQUIREMENTS — This is for a LISTENING PRACTICE video targeting overse
 TECHNICAL REQUIREMENTS:
 - Exactly 2 speakers with natural American English
 - Each speaker MUST have a clearly defined ROLE in the story (e.g. "customer" vs "waiter", "passenger" vs "check-in agent"). The role must be appropriate for the topic.
-- Exactly 18 dialogue lines (each under 15 words)
+- Exactly {num_lines} dialogue lines (each under 15 words)
 - The dialogue must flow as a continuous, coherent story (not disconnected Q&A)
 - Every dialogue line MUST include:
   - "text": the English sentence
@@ -166,8 +174,12 @@ JSON schema:
 Topic: {topic}"""
 
 
-def _load_used_listening_summaries(lessons_dir=None):
-    """Load summaries of previously generated listening dialogues for anti-duplicate."""
+def _load_used_listening_summaries(lessons_dir: str = None) -> list[str]:
+    """Load summaries of previously generated listening dialogues for anti-duplicate.
+
+    Scans a lessons/ directory for JSON files with lesson_type="listening".
+    If lessons_dir is None or doesn't exist, returns empty list.
+    """
     if not lessons_dir:
         return []
     lessons_path = Path(lessons_dir)
@@ -189,11 +201,25 @@ def _load_used_listening_summaries(lessons_dir=None):
     return summaries
 
 
-def generate_listening_script(topic, cefr="A2", lessons_dir=None):
-    """Generate a listening-practice lesson script via SenseNova DeepSeek V4 Flash."""
-    used_summaries = _load_used_listening_summaries(lessons_dir)
-    prompt = _build_listening_prompt(topic, cefr, used_dialogues=used_summaries)
+def generate_listening_script(topic: str, cefr: str = "A2",
+                              lessons_dir: str = None,
+                              num_lines: int = 18) -> dict:
+    """Generate a listening-practice lesson script via SenseNova DeepSeek V4 Flash.
 
+    Args:
+        topic: e.g. "At the Pharmacy"
+        cefr: CEFR level (A1, A2, B1, B2, C1, C2)
+        lessons_dir: optional path to lessons/ directory for anti-duplicate check
+        num_lines: number of dialogue lines to generate (default 18)
+
+    Returns:
+        Script dict with dialogue[], char descriptions, title, etc.
+    """
+    used_summaries = _load_used_listening_summaries(lessons_dir)
+    prompt = _build_listening_prompt(topic, cefr, used_dialogues=used_summaries,
+                                     num_lines=num_lines)
+
+    # Retry up to 3 times on JSON parse errors (LLM may truncate or produce invalid JSON)
     last_error = None
     for attempt in range(3):
         try:
@@ -213,7 +239,10 @@ def generate_listening_script(topic, cefr="A2", lessons_dir=None):
     else:
         raise RuntimeError(f"LLM script generation failed after 3 retries: {last_error}")
 
+    # Ensure lesson_type marker
     script["lesson_type"] = "listening"
+
+    # Ensure all required fields exist
     script.setdefault("story_hook", "")
     script.setdefault("intro_zh", "")
     script.setdefault("outro", "That's all for today. Keep practicing!")
@@ -229,6 +258,7 @@ def generate_listening_script(topic, cefr="A2", lessons_dir=None):
     script.setdefault("char_a_role", "")
     script.setdefault("char_b_role", "")
 
+    # Ensure dialogue has all required fields
     for line in script.get("dialogue", []):
         line.setdefault("phonetic", "")
         line.setdefault("zh", "")
@@ -236,3 +266,18 @@ def generate_listening_script(topic, cefr="A2", lessons_dir=None):
         line.setdefault("video_prompt", "")
 
     return script
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Generate listening script")
+    parser.add_argument("--topic", required=True, help="Topic")
+    parser.add_argument("--cefr", default="A2", choices=["A1", "A2", "B1", "B2", "C1", "C2"], help="CEFR level (default A2)")
+    parser.add_argument("--output", default="script.json", help="Output JSON path")
+    args = parser.parse_args()
+
+    script = generate_listening_script(args.topic, args.cefr)
+    Path(args.output).write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"Script saved: {args.output}")
+    print(f"Title: {script.get('title', '')}")
+    print(f"Dialogue lines: {len(script.get('dialogue', []))}")
