@@ -630,62 +630,29 @@ def compose_listening(
                        out_path]
 
         else:
-            # Dialogue: video clip + audio
-            # 方案 B: grouped dialogue handled above (group_info+line_to_group).
-            # This else branch is the no-grouping fallback (uses whole clip per line).
-            ginfo = None  # group_clip_map no longer used — grouped dialogue handled above
-            if ginfo and ginfo.get("clip_path") and os.path.exists(ginfo["clip_path"]):
-                # Use group clip with accurate seek (-ss AFTER -i for frame-accurate slicing)
-                video_src = ginfo["clip_path"]
-                clip_start = ginfo["clip_start"]
-                clip_segment_dur = ginfo["clip_segment_dur"]
-                vf = "fps=24"
-                if audio_file and os.path.exists(audio_file):
-                    # -ss after -i = accurate seek (slower but no keyframe alignment issues)
-                    cmd = ["ffmpeg", "-y",
-                           "-i", video_src, "-i", audio_file,
-                           "-ss", f"{clip_start:.3f}", "-t", f"{clip_segment_dur:.3f}",
-                           "-vf", vf,
-                           "-map", "0:v:0", "-map", "1:a:0",
-                           "-t", f"{duration:.3f}",
-                           "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                           "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                           "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
-                           out_path]
-                else:
-                    cmd = ["ffmpeg", "-y",
-                           "-i", video_src,
-                           "-ss", f"{clip_start:.3f}", "-t", f"{clip_segment_dur:.3f}",
-                           "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                           "-vf", vf,
-                           "-map", "0:v:0", "-map", "2:a",
-                           "-t", f"{duration:.3f}",
-                           "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                           "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                           out_path]
+            # Dialogue (no-grouping fallback): video clip + audio
+            # 方案 B grouped dialogue is handled above; this is the non-grouped path.
+            vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
+            if vid_dur > 0 and audio_dur > 0:
+                vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,fps=24"
             else:
-                # Fallback: whole clip behavior (no grouping)
-                vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
-                if vid_dur > 0 and audio_dur > 0:
-                    vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,fps=24"
-                else:
-                    vf = "fps=24"
-                if audio_file and os.path.exists(audio_file):
-                    cmd = ["ffmpeg", "-y", "-i", video_src, "-i", audio_file,
-                           "-t", f"{duration:.3f}", "-vf", vf,
-                           "-map", "0:v:0", "-map", "1:a:0",
-                           "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                           "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                           "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
-                           out_path]
-                else:
-                    cmd = ["ffmpeg", "-y", "-i", video_src,
-                           "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                           "-t", f"{duration:.3f}", "-vf", vf,
-                           "-map", "0:v:0", "-map", "1:a:0",
-                           "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                           "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                           out_path]
+                vf = "fps=24"
+            if audio_file and os.path.exists(audio_file):
+                cmd = ["ffmpeg", "-y", "-i", video_src, "-i", audio_file,
+                       "-t", f"{duration:.3f}", "-vf", vf,
+                       "-map", "0:v:0", "-map", "1:a:0",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                       "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
+                       out_path]
+            else:
+                cmd = ["ffmpeg", "-y", "-i", video_src,
+                       "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                       "-t", f"{duration:.3f}", "-vf", vf,
+                       "-map", "0:v:0", "-map", "1:a:0",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                       out_path]
 
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
