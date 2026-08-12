@@ -732,6 +732,32 @@ def main():
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  Meta saved: {meta_path}")
 
+    # ===== Step 4.5: Generate YouTube metadata + thumbnail =====
+    print("\n" + "-" * 60)
+    print("Step 4.5: Generating YouTube metadata + thumbnail...")
+    from thumbnail_gen import generate_thumbnail, save_youtube_metadata
+
+    scene_img_full = str(img_dir / "scene.png")
+    thumb_path = str(work_dir / "thumbnail.jpg")
+    generate_thumbnail(
+        script=script,
+        scene_img=scene_img_full,
+        output_path=thumb_path,
+        mcp_call_tool=call_tool,
+        mcp_parse_task_id=parse_task_id,
+        mcp_poll_task=poll_task,
+        mcp_download_file=download_file,
+        structure=args.structure,
+    )
+
+    yt_meta_path = str(work_dir / "youtube_metadata.json")
+    save_youtube_metadata(
+        script=script,
+        timeline=timeline,
+        output_path=yt_meta_path,
+        structure=args.structure,
+    )
+
     # ===== Step 5: Compose final video =====
     print("\n" + "=" * 60)
     print("Step 5: Composing final video...")

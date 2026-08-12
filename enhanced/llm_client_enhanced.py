@@ -58,6 +58,10 @@ TECHNICAL REQUIREMENTS:
 - "char_b_gender": "male" or "female" — the gender of speaker 2
 - "char_a_role": the role of speaker 1 in the story (e.g. "waitress", "customer")
 - "char_b_role": the role of speaker 2 in the story (e.g. "customer", "waitress")
+- "youtube_title": a high-CTR YouTube title (max 60 chars). Must include the topic keyword and "English Listening Practice". Use power words and emoji. Example: "Master English Listening: At the Pharmacy 🏥 Vocab + Quiz!"
+- "youtube_description": a full YouTube video description (max 3000 chars). First line must be a hook with the main keyword. Include a "⏱️ Chapters:" section with timestamps for: 00:00 Vocabulary, 01:30 Title, 01:35 Dialogue, 04:30 Slow Speed, 08:00 Quiz, 09:30 Shadowing, 15:30 Outro. End with 3 hashtags (#EnglishListening #ESL #LearnEnglish) and a subscribe CTA. ALL Chinese text in Traditional Chinese (繁體中文).
+- "youtube_tags": an array of 15-20 SEO tags (mix of short and long-tail keywords, include both English and Traditional Chinese tags)
+- "thumbnail_prompt": a detailed prompt for generating a YouTube thumbnail background image. Must describe: a 3D cartoon character with an expressive face (surprised or thinking), the scene location, bright colors, left side of frame with right side empty for text overlay, 16:9 aspect ratio
 - "title": English title (e.g. "AT THE AIRPORT")
 - "title_zh": Traditional Chinese short title (max 6 characters, e.g. "在機場")
 - "scene_zh": Traditional Chinese scene description (e.g. "餐廳 · 點餐")
@@ -101,6 +105,10 @@ JSON schema:
   "char_b_gender": string,
   "char_a_role": string,
   "char_b_role": string,
+  "youtube_title": string,
+  "youtube_description": string,
+  "youtube_tags": [string],
+  "thumbnail_prompt": string,
   "vocabulary": [{{"word": string, "phonetic": string, "zh": string, "example": string}}],
   "comprehension_questions": [{{"question": string, "options": [string, string, string, string], "answer": string}}],
   "dialogue": [{{"speaker": string, "text": string, "phonetic": string, "zh": string, "image_prompt": string, "video_prompt": string}}]
@@ -159,6 +167,10 @@ def generate_listening_script_enhanced(topic: str, cefr: str = "A2",
     script.setdefault("char_b_gender", "female")
     script.setdefault("char_a_role", "")
     script.setdefault("char_b_role", "")
+    script.setdefault("youtube_title", "")
+    script.setdefault("youtube_description", "")
+    script.setdefault("youtube_tags", [])
+    script.setdefault("thumbnail_prompt", "")
 
     # Ensure enhanced fields
     script.setdefault("vocabulary", [])
