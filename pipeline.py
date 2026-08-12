@@ -34,7 +34,7 @@ from grouping_b import build_dialogue_groups, merge_group_prompt
 from topic_manager import pick_random_topic
 
 
-def _validate_script(script: dict, num_lines: int) -> tuple[bool, str]:
+def _validate_script(script: dict, num_lines: int, enhanced: bool = False) -> tuple[bool, str]:
     """Validate a generated script. Returns (is_valid, error_message)."""
     dialogue = script.get("dialogue", [])
     if len(dialogue) < num_lines:
@@ -49,17 +49,31 @@ def _validate_script(script: dict, num_lines: int) -> tuple[bool, str]:
             return False, f"Dialogue line {i} has empty 'phonetic'"
         if not line.get("speaker", ""):
             return False, f"Dialogue line {i} has empty 'speaker'"
+    if enhanced:
+        vocab = script.get("vocabulary", [])
+        if len(vocab) < 3:
+            return False, f"Vocabulary count {len(vocab)} < required 3"
+        questions = script.get("comprehension_questions", [])
+        if len(questions) < 1:
+            return False, f"Comprehension questions count {len(questions)} < required 1"
     return True, ""
 
 
-def _generate_script_with_retry(topic, cefr, lessons_dir, num_lines, max_attempts=5) -> dict:
+def _generate_script_with_retry(topic, cefr, lessons_dir, num_lines,
+                                enhanced=False, max_attempts=5) -> dict:
     """Generate and validate script, retrying on failure."""
     for attempt in range(max_attempts):
         try:
             print(f"  [Script] Attempt {attempt+1}/{max_attempts}...")
-            script = generate_listening_script(topic, cefr, lessons_dir=lessons_dir,
-                                               num_lines=num_lines)
-            valid, msg = _validate_script(script, num_lines)
+            if enhanced:
+                from enhanced.llm_client_enhanced import generate_listening_script_enhanced
+                script = generate_listening_script_enhanced(topic, cefr,
+                                                             lessons_dir=lessons_dir,
+                                                             num_lines=num_lines)
+            else:
+                script = generate_listening_script(topic, cefr, lessons_dir=lessons_dir,
+                                                   num_lines=num_lines)
+            valid, msg = _validate_script(script, num_lines, enhanced=enhanced)
             if valid:
                 print(f"  [Script] Valid: {len(script['dialogue'])} lines")
                 return script
@@ -230,7 +244,7 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths):
     print(f"  [Video] Total clips downloaded: {total}/{len(video_tasks)}")
 
 
-def _generate_tts(script, dialogue, audio_dir, results):
+def _generate_tts(script, dialogue, audio_dir, results, enhanced=False):
     """Generate all TTS audio. Runs in a thread."""
     tts = TTSEngine()
     voice_map = build_voice_map(script)
@@ -270,16 +284,73 @@ def _generate_tts(script, dialogue, audio_dir, results):
         speaker = line.get("speaker", "char_a")
         voice = get_zh_voice(speaker, script)
         path = str(audio_dir / f"zh_{i}.mp3")
-        # synth_chinese tries edge-tts first (5 retries, 30s timeout),
-        # then falls back to Kokoro automatically. Both can raise.
         dur = tts.synth_chinese(text, voice, path, rate="-10%")
         zh_paths.append(path)
         print(f"  [TTS] zh_{i}: {dur:.1f}s")
+
+    # Enhanced: vocabulary + slow dialogue + quiz TTS
+    vocab_paths = []
+    slow_paths = []
+    quiz_paths = []
+    slow_durations = []
+
+    if enhanced:
+        vocabulary = script.get("vocabulary", [])
+        questions = script.get("comprehension_questions", [])
+
+        # Vocabulary TTS: read word + example sentence
+        for vi, vocab in enumerate(vocabulary):
+            word = vocab.get("word", "")
+            example = vocab.get("example", "")
+            text = f"{word}. {example}" if example else word
+            path = str(audio_dir / f"vocab_{vi}.mp3")
+            dur = tts.synth_english(text, "af_sky", path, rate="+0%")
+            vocab_paths.append(path)
+            print(f"  [TTS] vocab_{vi}: {dur:.1f}s ({word})")
+
+        # Slow-speed dialogue: FFmpeg atempo=0.75 on existing dialogue audio
+        for i, normal_path in enumerate(normal_paths):
+            if not os.path.exists(normal_path):
+                slow_paths.append("")
+                slow_durations.append(0.0)
+                continue
+            slow_path = str(audio_dir / f"dialogue_slow_{i}.mp3")
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-i", normal_path,
+                 "-filter:a", "atempo=0.75",
+                 "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                 slow_path],
+                capture_output=True, timeout=30)
+            if r.returncode == 0 and os.path.exists(slow_path):
+                dur = _get_audio_duration(slow_path)
+                slow_paths.append(slow_path)
+                slow_durations.append(dur)
+                print(f"  [TTS] dialogue_slow_{i}: {dur:.1f}s")
+            else:
+                slow_paths.append(normal_path)
+                slow_durations.append(dialogue_durations[i] if i < len(dialogue_durations) else 3.0)
+                print(f"  [TTS] dialogue_slow_{i}: FAILED, using normal audio")
+
+        # Quiz TTS: read question + options + answer
+        for qi, quiz in enumerate(questions):
+            question = quiz.get("question", "")
+            options = quiz.get("options", [])
+            answer = quiz.get("answer", "")
+            opts_text = " ".join(options)
+            text = f"{question}. {opts_text}. The answer is {answer}."
+            path = str(audio_dir / f"quiz_{qi}.mp3")
+            dur = tts.synth_english(text, "af_sky", path, rate="+0%")
+            quiz_paths.append(path)
+            print(f"  [TTS] quiz_{qi}: {dur:.1f}s")
 
     results["narration"] = narration
     results["normal_paths"] = normal_paths
     results["dialogue_durations"] = dialogue_durations
     results["zh_paths"] = zh_paths
+    results["vocab_paths"] = vocab_paths
+    results["slow_paths"] = slow_paths
+    results["slow_durations"] = slow_durations
+    results["quiz_paths"] = quiz_paths
     print("  [TTS] All TTS generation complete.")
 
 
@@ -297,6 +368,8 @@ def main():
     parser.add_argument("--num-lines", type=int, default=18, help="Number of dialogue lines (default 18)")
     parser.add_argument("--mcp-token", default=None, help="TJGenerators MCP OAuth token (optional on Windows, required on Colab)")
     parser.add_argument("--api-key", default=None, help="SenseNova API key (or set SENSENOVA_API_KEY env var)")
+    parser.add_argument("--structure", default="original", choices=["original", "enhanced"],
+                        help="Video structure: 'original' (4-chapter) or 'enhanced' (7-chapter with vocab+quiz+slow)")
     args = parser.parse_args()
 
     # Set API key from arg if provided
@@ -333,7 +406,7 @@ def main():
     print("=" * 60)
     print("Step 0: Generating script via LLM (SenseNova DeepSeek V4 Flash)...")
     script = _generate_script_with_retry(args.topic, args.cefr, args.lessons_dir,
-                                         args.num_lines)
+                                         args.num_lines, enhanced=(args.structure == "enhanced"))
     script_path = work_dir / "script.json"
     script_path.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  Script saved: {script_path}")
@@ -364,9 +437,10 @@ def main():
 
     # Start TTS thread immediately (only depends on script, not images)
     tts_results = {}
+    is_enhanced = (args.structure == "enhanced")
     tts_thread = threading.Thread(
         target=_generate_tts,
-        args=(script, dialogue, audio_dir, tts_results),
+        args=(script, dialogue, audio_dir, tts_results, is_enhanced),
         daemon=True,
     )
     tts_thread.start()
@@ -543,45 +617,100 @@ def main():
     # ===== Step 4: Build timeline + SRT =====
     print("\n" + "=" * 60)
     print("Step 4: Building timeline + SRT...")
-    timeline = build_listening_timeline(
-        script, dialogue_durations,
-        pad=args.pad, practice_duration=args.practice_duration,
-    )
-
-    # Add audio_dur and adjust duration to include pad
     tts = TTSEngine()
-    for seg in timeline:
-        seg_type = seg.get("type", "")
-        audio_idx = seg.get("audio_index", 0)
+    if is_enhanced:
+        from enhanced.timeline_enhanced import build_enhanced_timeline, build_srt_from_timeline_enhanced
+        slow_paths = tts_results.get("slow_paths", [])
+        slow_durations = tts_results.get("slow_durations", [])
+        vocab_paths = tts_results.get("vocab_paths", [])
+        quiz_paths = tts_results.get("quiz_paths", [])
+        # Get vocab and quiz durations
+        vocab_durations = [tts.get_duration(p) if p and os.path.exists(p) else 4.0 for p in vocab_paths]
+        quiz_durations = [tts.get_duration(p) if p and os.path.exists(p) else 6.0 for p in quiz_paths]
 
-        if seg_type in ("dialogue", "listen_en"):
-            ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
-            seg["audio_dur"] = ad
-            seg["duration"] = ad + args.pad
-        elif seg_type == "listen_zh":
-            if audio_idx < len(zh_paths) and zh_paths[audio_idx]:
-                ad = tts.get_duration(zh_paths[audio_idx])
-            else:
+        timeline = build_enhanced_timeline(
+            script, dialogue_durations, slow_durations,
+            vocab_durations, quiz_durations,
+            pad=args.pad, practice_duration=args.practice_duration,
+        )
+        # Add audio_dur for enhanced segment types
+        for seg in timeline:
+            seg_type = seg.get("type", "")
+            audio_idx = seg.get("audio_index", 0)
+            if seg_type == "vocab":
+                ad = vocab_durations[audio_idx] if audio_idx < len(vocab_durations) else 4.0
+                seg["audio_dur"] = ad
+                seg["duration"] = ad + args.pad
+            elif seg_type == "quiz":
+                ad = quiz_durations[audio_idx] if audio_idx < len(quiz_durations) else 6.0
+                seg["audio_dur"] = ad
+                seg["duration"] = ad + args.pad
+            elif seg_type == "dialogue_slow":
+                ad = slow_durations[audio_idx] if audio_idx < len(slow_durations) else 4.0
+                seg["audio_dur"] = ad
+                seg["duration"] = ad + args.pad
+            elif seg_type in ("dialogue", "listen_en"):
                 ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
-            seg["audio_dur"] = ad
-            seg["duration"] = ad + args.pad
-        elif seg_type == "practice":
-            seg["audio_dur"] = 0
-        elif seg_type == "title_card":
-            seg["audio_dur"] = seg["duration"]
-        elif seg_type == "practice_intro":
-            pi_path = narration.get("practice_intro", "")
-            ad = tts.get_duration(pi_path) if pi_path and os.path.exists(pi_path) else seg["duration"] - args.pad
-            seg["audio_dur"] = ad
-            seg["duration"] = ad + args.pad
-        elif seg_type == "outro":
-            out_path = narration.get("outro", "")
-            ad = tts.get_duration(out_path) if out_path and os.path.exists(out_path) else seg["duration"] - args.pad
-            seg["audio_dur"] = ad
-            seg["duration"] = ad + args.pad
+                seg["audio_dur"] = ad
+                seg["duration"] = ad + args.pad
+            elif seg_type == "listen_zh":
+                if audio_idx < len(zh_paths) and zh_paths[audio_idx]:
+                    ad = tts.get_duration(zh_paths[audio_idx])
+                else:
+                    ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
+                seg["audio_dur"] = ad
+                seg["duration"] = ad + args.pad
+            elif seg_type == "practice":
+                seg["audio_dur"] = 0
+            elif seg_type == "title_card":
+                seg["audio_dur"] = seg["duration"]
+            elif seg_type == "practice_intro":
+                pi_path = narration.get("practice_intro", "")
+                ad = tts.get_duration(pi_path) if pi_path and os.path.exists(pi_path) else seg["duration"] - args.pad
+                seg["audio_dur"] = ad
+                seg["duration"] = ad + args.pad
+            elif seg_type == "outro":
+                out_path = narration.get("outro", "")
+                ad = tts.get_duration(out_path) if out_path and os.path.exists(out_path) else seg["duration"] - args.pad
+                seg["audio_dur"] = ad
+                seg["duration"] = ad + args.pad
 
-    # Build SRT
-    srt = build_srt_from_timeline(timeline, gap=0.0)
+        srt = build_srt_from_timeline_enhanced(timeline, gap=0.0)
+    else:
+        timeline = build_listening_timeline(
+            script, dialogue_durations,
+            pad=args.pad, practice_duration=args.practice_duration,
+        )
+        # Add audio_dur and adjust duration to include pad
+        for seg in timeline:
+            seg_type = seg.get("type", "")
+            audio_idx = seg.get("audio_index", 0)
+            if seg_type in ("dialogue", "listen_en"):
+                ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
+                seg["audio_dur"] = ad
+                seg["duration"] = ad + args.pad
+            elif seg_type == "listen_zh":
+                if audio_idx < len(zh_paths) and zh_paths[audio_idx]:
+                    ad = tts.get_duration(zh_paths[audio_idx])
+                else:
+                    ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
+                seg["audio_dur"] = ad
+                seg["duration"] = ad + args.pad
+            elif seg_type == "practice":
+                seg["audio_dur"] = 0
+            elif seg_type == "title_card":
+                seg["audio_dur"] = seg["duration"]
+            elif seg_type == "practice_intro":
+                pi_path = narration.get("practice_intro", "")
+                ad = tts.get_duration(pi_path) if pi_path and os.path.exists(pi_path) else seg["duration"] - args.pad
+                seg["audio_dur"] = ad
+                seg["duration"] = ad + args.pad
+            elif seg_type == "outro":
+                out_path = narration.get("outro", "")
+                ad = tts.get_duration(out_path) if out_path and os.path.exists(out_path) else seg["duration"] - args.pad
+                seg["audio_dur"] = ad
+                seg["duration"] = ad + args.pad
+        srt = build_srt_from_timeline(timeline, gap=0.0)
     srt_path = sub_dir / "output.srt"
     srt_path.write_text(srt, encoding="utf-8")
     print(f"  SRT saved: {srt_path}")
@@ -595,6 +724,10 @@ def main():
         "normal_paths": normal_paths,
         "zh_paths": zh_paths,
     }
+    if is_enhanced:
+        meta["slow_paths"] = tts_results.get("slow_paths", [])
+        meta["vocab_paths"] = tts_results.get("vocab_paths", [])
+        meta["quiz_paths"] = tts_results.get("quiz_paths", [])
     meta_path = sub_dir / "meta.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  Meta saved: {meta_path}")
@@ -607,21 +740,42 @@ def main():
     def progress_cb(pct, msg):
         print(f"  [{pct}%] {msg}")
 
-    final_path = compose_listening(
-        work_dir=str(work_dir),
-        clip_paths=clip_paths_final,
-        timeline=timeline,
-        script=script,
-        narration=narration,
-        normal_paths=normal_paths,
-        zh_paths=zh_paths,
-        scene_img=scene_img,
-        srt_dir=str(sub_dir),
-        pad=args.pad,
-        progress_cb=progress_cb,
-        group_info=group_info,
-        line_to_group=line_to_group,
-    )
+    if is_enhanced:
+        from enhanced.video_compose_enhanced import compose_listening_enhanced
+        final_path = compose_listening_enhanced(
+            work_dir=str(work_dir),
+            clip_paths=clip_paths_final,
+            timeline=timeline,
+            script=script,
+            narration=narration,
+            normal_paths=normal_paths,
+            zh_paths=zh_paths,
+            slow_paths=tts_results.get("slow_paths", []),
+            vocab_paths=tts_results.get("vocab_paths", []),
+            quiz_paths=tts_results.get("quiz_paths", []),
+            scene_img=scene_img,
+            srt_dir=str(sub_dir),
+            pad=args.pad,
+            progress_cb=progress_cb,
+            group_info=group_info,
+            line_to_group=line_to_group,
+        )
+    else:
+        final_path = compose_listening(
+            work_dir=str(work_dir),
+            clip_paths=clip_paths_final,
+            timeline=timeline,
+            script=script,
+            narration=narration,
+            normal_paths=normal_paths,
+            zh_paths=zh_paths,
+            scene_img=scene_img,
+            srt_dir=str(sub_dir),
+            pad=args.pad,
+            progress_cb=progress_cb,
+            group_info=group_info,
+            line_to_group=line_to_group,
+        )
 
     print("\n" + "=" * 60)
     print(f"DONE! Final video: {final_path}")
