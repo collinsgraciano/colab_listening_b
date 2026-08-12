@@ -3,18 +3,13 @@
     "Making Breakfast",
     "Doing Laundry",
     "Cleaning the House",
-    "Taking a Shower",
-    "Getting Dressed",
-    "Brushing Teeth",
-    "Making the Bed",
-    "Watering Plants",
-    "Taking Out the Trash",
     "Reading a Book",
     "Watching TV",
-    "Setting an Alarm",
-    "Feeding the Pet",
-    "Checking the Mail",
-    "Locking the Door"
+    "Cooking Dinner",
+    "Following a Recipe",
+    "Grocery Shopping List",
+    "Organizing the Closet",
+    "Taking Out the Trash"
   ],
   "旅行 Travel": [
     "At the Airport Check-in",
@@ -31,7 +26,10 @@
     "At the Travel Agency",
     "Lost Luggage Claim",
     "At the Tourist Information",
-    "Buying Souvenirs"
+    "Buying Souvenirs",
+    "Booking a Hotel Online",
+    "Asking About Hotel Amenities",
+    "Dealing with a Cancelled Flight"
   ],
   "餐厅 Restaurant": [
     "Ordering Fast Food",
@@ -43,7 +41,11 @@
     "Complaining About Food",
     "Ordering Delivery",
     "At the Buffet",
-    "Dietary Restrictions"
+    "Dietary Restrictions",
+    "Wrong Order at a Restaurant",
+    "Asking for Recommendations",
+    "Splitting the Bill with Friends",
+    "Ordering Dessert"
   ],
   "购物 Shopping": [
     "At the Supermarket",
@@ -53,9 +55,13 @@
     "Comparing Prices",
     "At the Electronics Store",
     "Buying Shoes",
-    "At the Pharmacy",
     "At the Bookstore",
-    "Bargaining at the Market"
+    "Bargaining at the Market",
+    "Buying a Gift for Someone",
+    "Asking for a Different Size",
+    "Online Shopping Returns",
+    "At the Mall Information Desk",
+    "Exchange and Refund"
   ],
   "工作 Work": [
     "Job Interview",
@@ -67,7 +73,11 @@
     "Using the Printer",
     "Lunch Break",
     "Working from Home",
-    "Quitting a Job"
+    "Quitting a Job",
+    "Introducing Yourself at Work",
+    "Asking for Help with a Task",
+    "Discussing a Project Deadline",
+    "Performance Review"
   ],
   "学校 School": [
     "First Day of School",
@@ -77,7 +87,11 @@
     "Taking a Test",
     "School Cafeteria",
     "After-school Club",
-    "Parent-Teacher Meeting"
+    "Parent-Teacher Meeting",
+    "Registering for Classes",
+    "Asking About Homework",
+    "Late for Class",
+    "Cheating Incident Report"
   ],
   "健康 Health": [
     "At the Doctor's Office",
@@ -87,7 +101,11 @@
     "Making an Appointment",
     "Emergency Room Visit",
     "Getting a Checkup",
-    "Allergies"
+    "Allergies",
+    "Getting a Flu Shot",
+    "At the Eye Doctor",
+    "Discussing Test Results",
+    "Asking About Side Effects"
   ],
   "社交 Social": [
     "Meeting New Friends",
@@ -97,7 +115,12 @@
     "Apologizing to a Friend",
     "Borrowing Something",
     "Saying Goodbye",
-    "Receiving a Compliment"
+    "Receiving a Compliment",
+    "Introducing a Friend to Someone",
+    "Planning a Weekend Together",
+    "Forgetting Someone's Name",
+    "Awkward Elevator Small Talk",
+    "Reconnecting with an Old Friend"
   ],
   "交通 Transportation": [
     "At the Subway Station",
@@ -107,7 +130,11 @@
     "Getting a Driver's License",
     "Parking the Car",
     "At the Car Wash",
-    "Reporting a Lost Item"
+    "Reporting a Lost Item on Transit",
+    "Taking an Uber or Lyft",
+    "Getting Pulled Over",
+    "Asking About Train Delays",
+    "Buying a Parking Permit"
   ],
   "银行与邮局 Bank & Post": [
     "Opening a Bank Account",
@@ -116,7 +143,12 @@
     "Sending a Package",
     "Buying Stamps",
     "Paying Bills",
-    "Exchanging Currency"
+    "Exchanging Currency",
+    "Reporting a Lost Credit Card",
+    "Applying for a Credit Card",
+    "Sending Money Overseas",
+    "Asking About Fees",
+    "Depositing a Check"
   ],
   "天气与环境 Weather": [
     "Talking About the Weather",
@@ -124,7 +156,9 @@
     "Sunny Day Plans",
     "Rainy Day Activities",
     "Seasonal Changes",
-    "Air Quality Warning"
+    "Air Quality Warning",
+    "Checking the Forecast",
+    "Discussing Climate Change"
   ],
   "科技 Technology": [
     "Setting Up a New Phone",
@@ -134,7 +168,11 @@
     "Video Call with Friends",
     "Social Media Posting",
     "Downloading an App",
-    "Privacy Settings"
+    "Privacy Settings",
+    "Screen Sharing in a Meeting",
+    "Explaining How to Use an App",
+    "Online Privacy Concerns",
+    "Streaming Service Subscription"
   ],
   "娱乐 Entertainment": [
     "Going to the Movies",
@@ -144,7 +182,11 @@
     "Booking Tickets Online",
     "At the Museum",
     "At the Gym",
-    "Going to the Beach"
+    "Going to the Beach",
+    "Choosing a Movie to Watch",
+    "Discussing a TV Show",
+    "Planning a Game Night",
+    "At the Bowling Alley"
   ],
   "家庭 Family": [
     "Family Dinner",
@@ -153,6 +195,101 @@
     "Planning a Family Trip",
     "Talking About the Day",
     "Weekend Family Activity",
-    "Home alone Safety"
+    "Home alone Safety",
+    "Babysitting Conversation",
+    "Discussing Curfew",
+    "Family Game Night"
+  ],
+  "住房 Housing": [
+    "Apartment Hunting",
+    "Talking to the Landlord",
+    "Reporting a Repair Needed",
+    "Paying Rent",
+    "Moving In Day",
+    "Asking a Neighbor to Be Quiet",
+    "Roommate Agreement Discussion",
+    "Setting Up Utilities",
+    "Broken Appliance Report",
+    "Asking About Lease Terms"
+  ],
+  "紧急情况 Emergency": [
+    "Calling 911",
+    "Car Breakdown on the Highway",
+    "Getting Locked Out",
+    "Reporting an Accident",
+    "Asking for Help from a Stranger",
+    "Lost in an Unfamiliar Area",
+    "Medical Emergency at Home",
+    "Reporting a Break-In"
+  ],
+  "个人形象 Grooming": [
+    "At the Hair Salon",
+    "At the Beauty Salon",
+    "Buying Skincare Products",
+    "Getting a Manicure",
+    "At the Barber Shop",
+    "Asking About Hairstyle Options",
+    "Buying Makeup",
+    "Eyeglasses Fitting"
+  ],
+  "客服 Customer Service": [
+    "Calling Tech Support",
+    "Complaining About a Product",
+    "Canceling a Subscription",
+    "Requesting a Refund",
+    "Disputing a Charge",
+    "Asking About a Warranty",
+    "Scheduling a Repair Visit",
+    "Upgrading a Service Plan"
+  ],
+  "财务 Finance": [
+    "Opening a Credit Card",
+    "Filing Taxes",
+    "Budget Planning",
+    "Sending Money Overseas",
+    "Applying for a Loan",
+    "Discussing Investment Options",
+    "Understanding a Bill",
+    "Setting Up Direct Deposit"
+  ],
+  "厨房烹饪 Cooking": [
+    "Following a Recipe",
+    "Kitchen Appliance Shopping",
+    "Grocery Shopping List",
+    "Baking Together",
+    "Substituting Ingredients",
+    "Sharing a Family Recipe",
+    "Cooking for a Potluck",
+    "Burnt Dinner Disaster"
+  ],
+  "宠物 Pet": [
+    "Adopting a Pet",
+    "At the Vet",
+    "Dog Park Conversation",
+    "Buying Pet Supplies",
+    "Pet Grooming Appointment",
+    "Asking About Pet Insurance",
+    "Reporting a Lost Pet",
+    "Pet Training Class"
+  ],
+  "约会社交 Dating": [
+    "Online Dating Profile",
+    "First Date Conversation",
+    "Blind Date Setup",
+    "Planning a Date Night",
+    "Breaking Up Conversation",
+    "Double Date Planning",
+    "Asking Someone Out",
+    "Talking About Relationship Goals"
+  ],
+  "文化差异 Culture": [
+    "Cultural Misunderstanding",
+    "Holiday Traditions Discussion",
+    "Food Preferences and Culture",
+    "Explaining a Custom",
+    "Language Barrier Moment",
+    "Discussing Stereotypes",
+    "Sharing Home Country Facts",
+    "Celebrating a New Holiday"
   ]
 }
