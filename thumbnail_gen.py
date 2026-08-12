@@ -85,24 +85,36 @@ CRITICAL: The largest and most prominent text on the thumbnail must be the Tradi
 def generate_thumbnail(script: dict, scene_img: str, output_path: str,
                         mcp_call_tool=None, mcp_parse_task_id=None,
                         mcp_poll_task=None, mcp_download_file=None,
-                        structure: str = "original") -> str:
+                        structure: str = "original",
+                        char_scene_url: str = None) -> str:
     """Generate a YouTube thumbnail with text baked into the AI prompt (one step).
+
+    If char_scene_url is provided, uses it as a reference image so the thumbnail
+    characters match the video's character designs.
 
     Falls back to Pillow text overlay on scene_img if AI generation fails.
     """
     prompt = _build_thumbnail_prompt(script, structure)
 
+    # If we have a char_scene reference, add instruction to match it
+    if char_scene_url:
+        prompt += "\n\nIMPORTANT: The characters' appearance, clothing, and hair MUST closely match the uploaded reference image. Use the reference image as the character design guide."
+
     # Try AI generation with text baked in
     if mcp_call_tool and mcp_parse_task_id and mcp_poll_task and mcp_download_file:
         print("  [Thumbnail] Generating thumbnail with baked-in text via MCP...")
         try:
-            result = mcp_call_tool("generate_image", {
+            gen_args = {
                 "prompt": prompt,
                 "provider": "frontier",
                 "quality": "high",
                 "image_size": '{"width": 1280, "height": 720}',
                 "output_format": "jpeg",
-            })
+            }
+            if char_scene_url:
+                gen_args["image_urls"] = char_scene_url
+                print(f"  [Thumbnail] Using char_scene reference: {char_scene_url[:60]}...")
+            result = mcp_call_tool("generate_image", gen_args)
             task_id = mcp_parse_task_id(result)
             if task_id:
                 data = mcp_poll_task(task_id, interval=10)

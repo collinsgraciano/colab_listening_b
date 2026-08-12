@@ -72,16 +72,40 @@ def test_single_thumbnail(topic: str, cefr: str, structure: str,
         f.write(prompt)
     print(f"    Prompt saved: {prompt_path}")
 
-    # Step 4: Generate image
-    print(f"\n[4] Generating thumbnail via generate_image (frontier)...")
-    result = call_tool("generate_image", {
+    # Step 4: Generate image — first generate char_scene, then use as reference
+    print(f"\n[4] Generating char_scene reference image...")
+    char_a_desc = script.get("char_a_description", "friendly young person")
+    char_b_desc = script.get("char_b_description", "friendly young person")
+    char_scene_prompt = f"Character design sheet, {char_a_desc} on the left, {char_b_desc} on the right, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9"
+    char_result = call_tool("generate_image", {
+        "prompt": char_scene_prompt,
+        "provider": "frontier",
+        "quality": "high",
+        "image_size": "landscape_16_9",
+        "output_format": "png",
+    })
+    char_task_id = parse_task_id(char_result)
+    char_scene_url = ""
+    if char_task_id:
+        char_data = poll_task(char_task_id, interval=10)
+        char_scene_url = char_data.get("url", "")
+        if char_scene_url:
+            print(f"    Char scene URL: {char_scene_url[:60]}...")
+
+    # Step 5: Generate thumbnail with char_scene as reference
+    print(f"\n[5] Generating thumbnail via generate_image (frontier)...")
+    if char_scene_url:
+        prompt += "\n\nIMPORTANT: The characters' appearance, clothing, and hair MUST closely match the uploaded reference image."
+    gen_args = {
         "prompt": prompt,
         "provider": "frontier",
         "quality": "high",
         "image_size": '{"width": 1280, "height": 720}',
         "output_format": "jpeg",
-        "num_images": 1,
-    })
+    }
+    if char_scene_url:
+        gen_args["image_urls"] = char_scene_url
+    result = call_tool("generate_image", gen_args)
 
     task_id = parse_task_id(result)
     if not task_id:
@@ -92,8 +116,8 @@ def test_single_thumbnail(topic: str, cefr: str, structure: str,
         return None
     print(f"    Task ID: {task_id}")
 
-    # Step 5: Poll
-    print(f"\n[5] Polling for completion...")
+    # Step 6: Poll
+    print(f"\n[6] Polling for completion...")
     data = poll_task(task_id, interval=10)
     url = data.get("url", "")
     if not url:
@@ -101,10 +125,10 @@ def test_single_thumbnail(topic: str, cefr: str, structure: str,
         print(f"    Raw: {data.get('raw_json', '')[:300]}")
         return None
 
-    # Step 6: Download
+    # Step 7: Download
     safe_topic = topic.replace(" ", "_").replace("/", "_")
     out_path = os.path.join(output_dir, f"thumbnail_{safe_topic}_{cefr}_{structure}.jpg")
-    print(f"\n[6] Downloading to: {out_path}")
+    print(f"\n[7] Downloading to: {out_path}")
     if download_file(url, out_path):
         size_kb = os.path.getsize(out_path) // 1024
         print(f"    SUCCESS: {out_path} ({size_kb}KB)")

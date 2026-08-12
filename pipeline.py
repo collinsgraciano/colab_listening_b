@@ -739,6 +739,8 @@ def main():
 
     scene_img_full = str(img_dir / "scene.png")
     thumb_path = str(work_dir / "thumbnail.jpg")
+    # Use char_scene.png CDN URL as reference for thumbnail character consistency
+    char_scene_cdn = image_urls.get("char_scene.png", "")
     generate_thumbnail(
         script=script,
         scene_img=scene_img_full,
@@ -748,6 +750,7 @@ def main():
         mcp_poll_task=poll_task,
         mcp_download_file=download_file,
         structure=args.structure,
+        char_scene_url=char_scene_cdn,
     )
 
     yt_meta_path = str(work_dir / "youtube_metadata.json")
