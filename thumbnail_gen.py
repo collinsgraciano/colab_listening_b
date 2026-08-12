@@ -31,25 +31,31 @@ def _build_thumbnail_prompt(script: dict, structure: str) -> str:
     - Top-right green icon: "中英對照"
     - Top center: "沉浸式聽力動畫" (listening) or "沉浸式英文動畫" (original)
     - Main scene: 3D Pixar characters + background + props
-    - Large text below characters: Traditional Chinese title (e.g. "在藥房")
-    - Smaller text below: e.g. "18句聽力練習"
+    - Large text below characters: Traditional Chinese title (e.g. "在藥房買藥英文")
+    - Smaller text below: English title (e.g. "AT THE PHARMACY") + subtitle
     - Bottom row of circular icons with bilingual text (scene keywords)
+
+    Key design: the LARGE title is in Traditional Chinese (the audience's native
+    language) for maximum CTR, with the English title as a smaller subtitle below.
     """
+    title_en = script.get("title", "ENGLISH LISTENING")
     title_zh = script.get("title_zh", script.get("intro_zh", ""))
+    # Build a descriptive Chinese title: topic + "英文" suffix (e.g. "在藥房買藥英文")
+    if title_zh and not title_zh.endswith("英文"):
+        title_zh_large = f"{title_zh}英文"
+    else:
+        title_zh_large = title_zh or "日常英語"
+
     cefr = script.get("cefr", "A2")
     char_a_desc = script.get("char_a_description", "friendly young person")
     char_b_desc = script.get("char_b_description", "friendly young person")
     scene_zh = script.get("scene_zh", script.get("title", "everyday life"))
     scene_en = script.get("scene", script.get("title", "everyday life"))
 
-    # Character expression & action from new LLM fields (fallback to defaults)
     expression = script.get("thumbnail_expression", "surprised and excited")
     action = script.get("thumbnail_action", "looking toward the camera and gesturing naturally")
-
-    # Subtitle text
     subtitle = script.get("thumbnail_subtitle", "18句聽力練習")
 
-    # Bottom icons from new LLM field (fallback to generic)
     icons = script.get("thumbnail_icons", [
         {"en": "Dialogue", "zh": "會話"},
         {"en": "Listening", "zh": "聽力"},
@@ -67,11 +73,13 @@ def _build_thumbnail_prompt(script: dict, structure: str) -> str:
 
 The main scene features a detailed view of {scene_en} with {char_a_desc} and {char_b_desc}, both with a {expression} expression, {action}. The background shows a detailed {scene_en} setting with relevant props and environment.
 
-The large text below the characters reads "{title_zh}" in bold yellow font with black outline, and below that, smaller text reads "{subtitle}".
+The LARGE bold text below the characters reads "{title_zh_large}" in bright yellow font with thick black outline — this is the main title and must be the most prominent text on the thumbnail. Below this large Chinese title, smaller text reads "{title_en}" in white. Below that, even smaller text reads "{subtitle}".
 
 At the very bottom, a precise row of circular icons is rendered with legible text associated: {icon_lines}.
 
-Clean legible text, bright studio lighting, vibrant colors, highly detailed, professional composition, 3D animated movie style, Pixar quality rendering, soft shadows, subsurface scattering, cinematic lighting."""
+Clean legible text, bright studio lighting, vibrant colors, highly detailed, professional composition, 3D animated movie style, Pixar quality rendering, soft shadows, subsurface scattering, cinematic lighting.
+
+CRITICAL: The largest and most prominent text on the thumbnail must be the Traditional Chinese title "{title_zh_large}". The English title "{title_en}" must be noticeably smaller, serving as a subtitle below the Chinese title. The Chinese audience sees the Chinese title first — it must grab attention."""
 
 
 def generate_thumbnail(script: dict, scene_img: str, output_path: str,
@@ -139,42 +147,65 @@ def _pillow_fallback(script: dict, scene_img: str, output_path: str,
 
     title_en = script.get("title", "").upper() or "ENGLISH LISTENING"
     title_zh = script.get("title_zh", script.get("intro_zh", ""))
+    # Large Chinese title: topic + "英文"
+    if title_zh and not title_zh.endswith("英文"):
+        title_zh_large = f"{title_zh}英文"
+    else:
+        title_zh_large = title_zh or "日常英語"
     cefr = script.get("cefr", "A2")
+    subtitle = script.get("thumbnail_subtitle", "18句聽力練習")
 
     STROKE = 8
     MARGIN = 40
 
-    # English title
-    en_size = 120
+    # English title (smaller, white, below Chinese title)
+    en_size = 56
     en_font = ImageFont.truetype(FONT_EN, en_size)
-    while en_size > 40:
+    while en_size > 24:
         bbox = draw.textbbox((0, 0), title_en, font=en_font)
         if (bbox[2] - bbox[0]) + STROKE * 2 <= THUMB_W // 2 - MARGIN:
             break
-        en_size -= 4
+        en_size -= 2
         en_font = ImageFont.truetype(FONT_EN, en_size)
     bbox = draw.textbbox((0, 0), title_en, font=en_font)
     en_w, en_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    en_y = int(THUMB_H * 0.25)
+    en_y = int(THUMB_H * 0.22)
     draw.text((THUMB_W // 2 + (THUMB_W // 2 - en_w) // 2, en_y), title_en,
-              font=en_font, fill=(255, 220, 0, 255),
-              stroke_width=STROKE, stroke_fill=(0, 0, 0, 255))
+              font=en_font, fill=(255, 255, 255, 255),
+              stroke_width=3, stroke_fill=(0, 0, 0, 255))
 
-    # Chinese title
-    if title_zh:
-        zh_size = 60
+    # Large Chinese title (biggest text on thumbnail, yellow + black stroke)
+    zh_stroke = 6
+    zh_size = 80
+    zh_font = ImageFont.truetype(FONT_ZH, zh_size)
+    while zh_size > 30:
+        bbox = draw.textbbox((0, 0), title_zh_large, font=zh_font)
+        if (bbox[2] - bbox[0]) + zh_stroke * 2 <= THUMB_W // 2 - MARGIN:
+            break
+        zh_size -= 2
         zh_font = ImageFont.truetype(FONT_ZH, zh_size)
-        while zh_size > 24:
-            bbox = draw.textbbox((0, 0), title_zh, font=zh_font)
-            if (bbox[2] - bbox[0]) + 5 * 2 <= THUMB_W // 2 - MARGIN:
+    bbox = draw.textbbox((0, 0), title_zh_large, font=zh_font)
+    zh_w, zh_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    zh_y = en_y + en_h + 10
+    draw.text((THUMB_W // 2 + (THUMB_W // 2 - zh_w) // 2, zh_y), title_zh_large,
+              font=zh_font, fill=(255, 220, 0, 255),
+              stroke_width=zh_stroke, stroke_fill=(0, 0, 0, 255))
+
+    # Subtitle (smallest, gold)
+    if subtitle:
+        sub_size = 36
+        sub_font = ImageFont.truetype(FONT_ZH, sub_size)
+        while sub_size > 18:
+            bbox = draw.textbbox((0, 0), subtitle, font=sub_font)
+            if (bbox[2] - bbox[0]) + 3 * 2 <= THUMB_W // 2 - MARGIN:
                 break
-            zh_size -= 2
-            zh_font = ImageFont.truetype(FONT_ZH, zh_size)
-        bbox = draw.textbbox((0, 0), title_zh, font=zh_font)
-        zh_w = bbox[2] - bbox[0]
-        draw.text((THUMB_W // 2 + (THUMB_W // 2 - zh_w) // 2, en_y + en_h + 15),
-                  title_zh, font=zh_font, fill=(255, 215, 0, 255),
-                  stroke_width=5, stroke_fill=(0, 0, 0, 255))
+            sub_size -= 2
+            sub_font = ImageFont.truetype(FONT_ZH, sub_size)
+        bbox = draw.textbbox((0, 0), subtitle, font=sub_font)
+        sub_w = bbox[2] - bbox[0]
+        draw.text((THUMB_W // 2 + (THUMB_W // 2 - sub_w) // 2, zh_y + zh_h + 10),
+                  subtitle, font=sub_font, fill=(255, 200, 80, 255),
+                  stroke_width=2, stroke_fill=(0, 0, 0, 255))
 
     # CEFR badge
     badge_r = 50
