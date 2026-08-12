@@ -531,6 +531,7 @@ def main():
         n_lines_in_group = len(group["lines"])
         group_total_with_pad = group["total_audio"] + n_lines_in_group * args.pad
         group_dur = round(group_total_with_pad)  # Seedance2 requires integer seconds
+        group_dur = max(4, min(group_dur, 15))  # Seedance2 API: duration must be 4-15
         video_tasks.append({
             "image_urls": char_scene_url,
             "prompt": video_prompt,
