@@ -36,7 +36,15 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
     req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            result = json.loads(resp.read().decode("utf-8"))
+            raw = resp.read().decode("utf-8")
+            if not raw.strip():
+                raise RuntimeError("LLM returned empty response body (HTTP 200, 0 bytes)")
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError:
+                raise RuntimeError(f"LLM returned non-JSON response (first 500 chars): {raw[:500]}") from None
+            if "choices" not in result or not result["choices"]:
+                raise RuntimeError(f"LLM response has no 'choices' field: {raw[:500]}")
             return result["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as e:
         err = e.read().decode("utf-8", errors="replace")
