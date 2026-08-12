@@ -66,7 +66,7 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths):
                     "duration": task["duration"],
                     "ratio": "16:9",
                     "resolution": "720p",
-                    "generate_audio": True,
+                    "generate_audio": idx == 0,
                 })
                 task_id = parse_task_id(result)
                 task_ids.append((idx, task_id, task["filename"]))
@@ -110,7 +110,7 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths):
                 "duration": task["duration"],
                 "ratio": "16:9",
                 "resolution": "720p",
-                "generate_audio": True,
+                "generate_audio": idx == 0,
             })
             task_id = parse_task_id(result)
             data = poll_task(task_id, interval=40)
