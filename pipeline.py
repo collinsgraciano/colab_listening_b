@@ -451,38 +451,23 @@ def main():
     image_failed = False
     for prompt, filename in image_prompts:
         print(f"  [Image] Generating: {filename}...")
-        url = ""
-        # Try frontier (high quality) first, then seedream (faster) as fallback
-        for provider, quality, max_wait in [("frontier", "high", 180), ("seedream", None, 120)]:
-            if provider == "frontier":
-                gen_args = {"prompt": prompt, "provider": "frontier", "quality": "high",
-                            "image_size": "landscape_16_9", "output_format": "png"}
-            else:
-                gen_args = {"prompt": prompt, "provider": "seedream",
-                            "image_size": "landscape_16_9", "output_format": "png"}
-            try:
-                result = call_tool("generate_image", gen_args)
-                task_id = parse_task_id(result)
-                if not task_id:
-                    print(f"    [Image] {provider}: no task_id, trying next provider...")
-                    continue
-                data = poll_task(task_id, interval=10, max_wait=max_wait)
-                url = data.get("url", "")
-                if url:
-                    print(f"    [Image] {provider} succeeded after {max_wait}s limit")
-                    break
-                else:
-                    print(f"    [Image] {provider}: no URL (status={data.get('status', 'timeout')}), trying next provider...")
-            except Exception as e:
-                print(f"    [Image] {provider} error: {e}, trying next provider...")
-                continue
+        result = call_tool("generate_image", {
+            "prompt": prompt,
+            "provider": "frontier",
+            "quality": "high",
+            "image_size": "landscape_16_9",
+            "output_format": "png",
+        })
+        task_id = parse_task_id(result)
+        data = poll_task(task_id, interval=10, max_wait=600)
+        url = data.get("url", "")
         if url:
             dest = str(img_dir / filename)
             download_file(url, dest)
             image_urls[filename] = url
             print(f"    [Image] Downloaded: {dest}")
         else:
-            print(f"    [Image] FATAL: No URL for {filename} after all providers")
+            print(f"    [Image] FATAL: No URL for {filename}")
             image_failed = True
 
     if image_failed:
