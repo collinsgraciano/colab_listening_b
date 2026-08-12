@@ -24,37 +24,54 @@ THUMB_H = 720
 
 
 def _build_thumbnail_prompt(script: dict, structure: str) -> str:
-    """Build a prompt that generates a complete YouTube thumbnail with text baked in."""
-    topic = script.get("title", "English Listening Practice")
-    title_en = script.get("title", "").upper()
-    if not title_en:
-        title_en = "ENGLISH LISTENING PRACTICE"
+    """Build a prompt that generates a YouTube thumbnail in the reference style.
+
+    Reference style elements:
+    - Top-left orange banner: "A1-A2 LEVEL"
+    - Top-right green icon: "中英對照"
+    - Top center: "沉浸式聽力動畫" (listening) or "沉浸式英文動畫" (original)
+    - Main scene: 3D Pixar characters + background + props
+    - Large text below characters: Traditional Chinese title (e.g. "在藥房")
+    - Smaller text below: e.g. "18句聽力練習"
+    - Bottom row of circular icons with bilingual text (scene keywords)
+    """
     title_zh = script.get("title_zh", script.get("intro_zh", ""))
     cefr = script.get("cefr", "A2")
-
     char_a_desc = script.get("char_a_description", "friendly young person")
-    scene = script.get("title", "everyday life")
+    char_b_desc = script.get("char_b_description", "friendly young person")
+    scene_zh = script.get("scene_zh", script.get("title", "everyday life"))
+    scene_en = script.get("scene", script.get("title", "everyday life"))
+
+    # Character expression & action from new LLM fields (fallback to defaults)
+    expression = script.get("thumbnail_expression", "surprised and excited")
+    action = script.get("thumbnail_action", "looking toward the camera and gesturing naturally")
+
+    # Subtitle text
+    subtitle = script.get("thumbnail_subtitle", "18句聽力練習")
+
+    # Bottom icons from new LLM field (fallback to generic)
+    icons = script.get("thumbnail_icons", [
+        {"en": "Dialogue", "zh": "會話"},
+        {"en": "Listening", "zh": "聽力"},
+        {"en": "Shadowing", "zh": "跟讀"},
+        {"en": "Practice", "zh": "練習"},
+    ])
+    icon_lines = "  ".join(f"{i['zh']} {i['en']}" for i in icons[:5])
 
     if structure == "enhanced":
-        bottom_text = "Vocabulary + Quiz + Slow Speed + Shadowing"
+        top_center = "沉浸式聽力動畫"
     else:
-        bottom_text = "Listen + Repeat + Shadowing"
+        top_center = "沉浸式英文動畫"
 
-    return f"""A high-quality YouTube thumbnail image, 1280x720 pixels, 16:9 aspect ratio.
+    return f"""A highly complex 3D Pixar-style YouTube thumbnail for {scene_en} English listening practice, complete with an orange banner at the top left reading "{cefr} LEVEL" and a green icon at the top right with the text "中英對照". At the top center, the text "{top_center}" is integrated.
 
-LEFT SIDE: A 3D cartoon style character ({char_a_desc}) in a {scene} scene, with a surprised and excited facial expression, looking toward the camera. The character should be modern, colorful, and eye-catching. The scene background should show elements related to {scene}.
+The main scene features a detailed view of {scene_en} with {char_a_desc} and {char_b_desc}, both with a {expression} expression, {action}. The background shows a detailed {scene_en} setting with relevant props and environment.
 
-RIGHT SIDE: Large bold text that says "{title_en}" in bright yellow color with thick black outline/stroke. The text must be clearly readable and centered on the right half of the image.
+The large text below the characters reads "{title_zh}" in bold yellow font with black outline, and below that, smaller text reads "{subtitle}".
 
-BELOW THE ENGLISH TITLE: Chinese text "{title_zh}" in gold color, slightly smaller than the English title, with black outline.
+At the very bottom, a precise row of circular icons is rendered with legible text associated: {icon_lines}.
 
-TOP-RIGHT CORNER: A red circular badge with white text "{cefr}" inside it, like a level indicator.
-
-BOTTOM BAR: A dark semi-transparent bar across the bottom with white text "{bottom_text}".
-
-The overall style should be bright, colorful, and attention-grabbing like a popular YouTube educational video thumbnail. High contrast, vibrant colors, professional design. The text must be sharp, clear, and correctly spelled.
-
-IMPORTANT: All text must be rendered as part of the image, clearly legible, with proper spelling. Do not use placeholder text or gibberish."""
+Clean legible text, bright studio lighting, vibrant colors, highly detailed, professional composition, 3D animated movie style, Pixar quality rendering, soft shadows, subsurface scattering, cinematic lighting."""
 
 
 def generate_thumbnail(script: dict, scene_img: str, output_path: str,

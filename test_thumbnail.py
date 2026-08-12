@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
 """Test script: generate YouTube thumbnail with text baked into the AI prompt.
 
-Instead of generating a background image then overlaying text via Pillow,
-this script puts the title text, level badge, and Chinese subtitle directly
-into the generate_image prompt so the AI renders everything in one step.
+Uses thumbnail_gen.py's _build_thumbnail_prompt for the prompt construction.
+Supports both single test and batch test modes.
 
 Usage:
     python test_thumbnail.py --topic "At the Pharmacy" --cefr A2 --structure enhanced
-    python test_thumbnail.py --topic "Ordering Coffee" --cefr A2 --structure original
-
-Requires: MCP token (from ~/.codely-cli/mcp-oauth-tokens.json or --mcp-token)
+    python test_thumbnail.py --batch
 """
 import argparse
 import json
@@ -21,39 +18,7 @@ SCRIPTS_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from mcp_client import initialize, call_tool, parse_task_id, poll_task, download_file
-
-
-def build_thumbnail_prompt(topic: str, cefr: str, structure: str,
-                           title_en: str = "", title_zh: str = "") -> str:
-    """Build a prompt that generates a complete YouTube thumbnail with text.
-
-    The AI generates the entire thumbnail in one shot: character + scene + text + badge.
-    """
-    if not title_en:
-        title_en = topic.upper()
-    if not title_zh:
-        title_zh = ""
-
-    if structure == "enhanced":
-        bottom_text = "Vocabulary + Quiz + Slow Speed + Shadowing"
-    else:
-        bottom_text = "Listen + Repeat + Shadowing"
-
-    return f"""A high-quality YouTube thumbnail image, 1280x720 pixels, 16:9 aspect ratio.
-
-LEFT SIDE: A 3D cartoon style character in a {topic} scene, with a surprised and excited facial expression, looking toward the camera. The character should be modern, colorful, and eye-catching. The scene background should show elements of {topic} (e.g. counter, shelves, products).
-
-RIGHT SIDE: Large bold text that says "{title_en}" in bright yellow color with thick black outline/stroke. The text must be clearly readable and centered on the right half of the image.
-
-BELOW THE ENGLISH TITLE: Chinese text "{title_zh}" in gold color, slightly smaller than the English title, with black outline.
-
-TOP-RIGHT CORNER: A red circular badge with white text "{cefr}" inside it, like a level indicator.
-
-BOTTOM BAR: A dark semi-transparent bar across the bottom with white text "{bottom_text}".
-
-The overall style should be bright, colorful, and attention-grabbing like a popular YouTube educational video thumbnail. High contrast, vibrant colors, professional design. The text must be sharp, clear, and correctly spelled.
-
-IMPORTANT: All text must be rendered as part of the image, clearly legible, with proper spelling. Do not use placeholder text or gibberish."""
+from thumbnail_gen import _build_thumbnail_prompt
 
 
 def test_single_thumbnail(topic: str, cefr: str, structure: str,
@@ -71,10 +36,32 @@ def test_single_thumbnail(topic: str, cefr: str, structure: str,
     initialize(token=mcp_token)
     print("    MCP connected.")
 
+    # Build a mock script dict for the prompt builder
+    script = {
+        "title": topic.upper(),
+        "title_zh": topic,
+        "intro_zh": "",
+        "cefr": cefr,
+        "char_a_description": "friendly young person",
+        "char_b_description": "friendly young person",
+        "scene_zh": topic,
+        "scene": topic.lower(),
+        "thumbnail_expression": "surprised and excited",
+        "thumbnail_action": "looking toward the camera and gesturing naturally",
+        "thumbnail_subtitle": "18句聽力練習",
+        "thumbnail_icons": [
+            {"en": "Dialogue", "zh": "會話"},
+            {"en": "Listening", "zh": "聽力"},
+            {"en": "Shadowing", "zh": "跟讀"},
+            {"en": "Practice", "zh": "練習"},
+        ],
+        "title": topic.upper(),
+    }
+
     # Build prompt
-    prompt = build_thumbnail_prompt(topic, cefr, structure)
+    prompt = _build_thumbnail_prompt(script, structure)
     print(f"\n[2] Prompt ({len(prompt)} chars):")
-    print(f"    {prompt[:200]}...")
+    print(f"    {prompt[:300]}...")
 
     # Generate image
     print(f"\n[3] Generating thumbnail via generate_image (frontier)...")
@@ -130,6 +117,7 @@ def test_multiple_thumbnails(mcp_token: str = None, output_dir: str = "./test_th
         ("Ordering Coffee", "A1", "enhanced"),
         ("Job Interview", "B1", "enhanced"),
         ("Apartment Hunting", "A2", "enhanced"),
+        ("At the Airport", "A2", "original"),
     ]
 
     print("=" * 60)
@@ -166,9 +154,9 @@ def main():
     parser.add_argument("--topic", default=None, help="Topic (e.g. 'At the Pharmacy')")
     parser.add_argument("--cefr", default="A2", help="CEFR level (default A2)")
     parser.add_argument("--structure", default="enhanced", choices=["original", "enhanced"],
-                        help="Video structure (affects bottom bar text)")
+                        help="Video structure (affects top center text)")
     parser.add_argument("--output", default="./test_thumbnails", help="Output directory")
-    parser.add_argument("--batch", action="store_true", help="Run batch test with 5 presets")
+    parser.add_argument("--batch", action="store_true", help="Run batch test with 6 presets")
     parser.add_argument("--mcp-token", default=None, help="MCP OAuth token")
     args = parser.parse_args()
 

@@ -61,7 +61,12 @@ TECHNICAL REQUIREMENTS:
 - "youtube_title": a high-CTR YouTube title (max 60 chars). Must include the topic keyword and "English Listening Practice". Use power words and emoji. Example: "Master English Listening: At the Pharmacy 🏥 Vocab + Quiz!"
 - "youtube_description": a full YouTube video description (max 3000 chars). First line must be a hook with the main keyword. Include a "⏱️ Chapters:" section with timestamps for: 00:00 Vocabulary, 01:30 Title, 01:35 Dialogue, 04:30 Slow Speed, 08:00 Quiz, 09:30 Shadowing, 15:30 Outro. End with 3 hashtags (#EnglishListening #ESL #LearnEnglish) and a subscribe CTA. ALL Chinese text in Traditional Chinese (繁體中文).
 - "youtube_tags": an array of 15-20 SEO tags (mix of short and long-tail keywords, include both English and Traditional Chinese tags)
-- "thumbnail_prompt": a detailed prompt for generating a YouTube thumbnail background image. Must describe: a 3D cartoon character with an expressive face (surprised or thinking), the scene location, bright colors, left side of frame with right side empty for text overlay, 16:9 aspect ratio
+- "scene": the English name of the scene/location (e.g. "pharmacy", "coffee shop", "hotel lobby"). Used for thumbnail and prompts.
+- "thumbnail_expression": the facial expression of the main character on the thumbnail (e.g. "surprised and excited", "confused and thinking", "cheerful and smiling", "friendly and confident")
+- "thumbnail_action": a short description of what the main character is doing on the thumbnail (e.g. "pointing to a menu", "holding a shopping bag", "waving hello", "gesturing toward the counter")
+- "thumbnail_subtitle": a short Traditional Chinese subtitle shown below the title on the thumbnail (e.g. "18句聽力練習", "每天50句", "實用日常英語")
+- "thumbnail_icons": an array of 4-5 objects {"en": string, "zh": string} describing scene-related keywords shown as circular icons at the bottom of the thumbnail. Each has an English label and a Traditional Chinese label. Example for pharmacy: [{"en": "Prescription", "zh": "處方"}, {"en": "Refill", "zh": "補充"}, {"en": "Cough Syrup", "zh": "止咳糖漿"}, {"en": "Side Effects", "zh": "副作用"}]
+- "thumbnail_prompt": a detailed prompt for generating a YouTube thumbnail background image. Must describe: a 3D Pixar-style character with an expressive face, the scene location, bright colors, reference-style layout.
 - "title": English title (e.g. "AT THE AIRPORT")
 - "title_zh": Traditional Chinese short title (max 6 characters, e.g. "在機場")
 - "scene_zh": Traditional Chinese scene description (e.g. "餐廳 · 點餐")
@@ -109,6 +114,11 @@ JSON schema:
   "youtube_description": string,
   "youtube_tags": [string],
   "thumbnail_prompt": string,
+  "scene": string,
+  "thumbnail_expression": string,
+  "thumbnail_action": string,
+  "thumbnail_subtitle": string,
+  "thumbnail_icons": [{"en": string, "zh": string}],
   "vocabulary": [{{"word": string, "phonetic": string, "zh": string, "example": string}}],
   "comprehension_questions": [{{"question": string, "options": [string, string, string, string], "answer": string}}],
   "dialogue": [{{"speaker": string, "text": string, "phonetic": string, "zh": string, "image_prompt": string, "video_prompt": string}}]
@@ -171,6 +181,11 @@ def generate_listening_script_enhanced(topic: str, cefr: str = "A2",
     script.setdefault("youtube_description", "")
     script.setdefault("youtube_tags", [])
     script.setdefault("thumbnail_prompt", "")
+    script.setdefault("scene", "")
+    script.setdefault("thumbnail_expression", "surprised and excited")
+    script.setdefault("thumbnail_action", "looking toward the camera and gesturing naturally")
+    script.setdefault("thumbnail_subtitle", "18句聽力練習")
+    script.setdefault("thumbnail_icons", [])
 
     # Ensure enhanced fields
     script.setdefault("vocabulary", [])
