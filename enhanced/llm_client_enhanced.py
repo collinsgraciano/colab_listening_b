@@ -65,7 +65,7 @@ TECHNICAL REQUIREMENTS:
 - "thumbnail_expression": the facial expression of the main character on the thumbnail (e.g. "surprised and excited", "confused and thinking", "cheerful and smiling", "friendly and confident")
 - "thumbnail_action": a short description of what the main character is doing on the thumbnail (e.g. "pointing to a menu", "holding a shopping bag", "waving hello", "gesturing toward the counter")
 - "thumbnail_subtitle": a short Traditional Chinese subtitle shown below the title on the thumbnail (e.g. "18句聽力練習", "每天50句", "實用日常英語")
-- "thumbnail_icons": an array of 4-5 objects {"en": string, "zh": string} describing scene-related keywords shown as circular icons at the bottom of the thumbnail. Each has an English label and a Traditional Chinese label. Example for pharmacy: [{"en": "Prescription", "zh": "處方"}, {"en": "Refill", "zh": "補充"}, {"en": "Cough Syrup", "zh": "止咳糖漿"}, {"en": "Side Effects", "zh": "副作用"}]
+- "thumbnail_icons": an array of 4-5 objects with "en" and "zh" string keys, describing scene-related keywords shown as circular icons at the bottom of the thumbnail. Each has an English label and a Traditional Chinese label. Example for pharmacy: [{{"en": "Prescription", "zh": "處方"}}, {{"en": "Refill", "zh": "補充"}}, {{"en": "Cough Syrup", "zh": "止咳糖漿"}}, {{"en": "Side Effects", "zh": "副作用"}}]
 - "thumbnail_prompt": a detailed prompt for generating a YouTube thumbnail background image. Must describe: a 3D Pixar-style character with an expressive face, the scene location, bright colors, reference-style layout.
 - "title": English title (e.g. "AT THE AIRPORT")
 - "title_zh": Traditional Chinese short title (max 6 characters, e.g. "在機場")
@@ -118,7 +118,7 @@ JSON schema:
   "thumbnail_expression": string,
   "thumbnail_action": string,
   "thumbnail_subtitle": string,
-  "thumbnail_icons": [{"en": string, "zh": string}],
+  "thumbnail_icons": [{{"en": string, "zh": string}}],
   "vocabulary": [{{"word": string, "phonetic": string, "zh": string, "example": string}}],
   "comprehension_questions": [{{"question": string, "options": [string, string, string, string], "answer": string}}],
   "dialogue": [{{"speaker": string, "text": string, "phonetic": string, "zh": string, "image_prompt": string, "video_prompt": string}}]
