@@ -56,8 +56,7 @@ def generate_thumbnail(script: dict, scene_img: str, output_path: str,
         try:
             result = mcp_call_tool("generate_image", {
                 "prompt": thumb_prompt,
-                "provider": "frontier",
-                "quality": "high",
+                "provider": "seedream",
                 "image_size": "landscape_16_9",
                 "output_format": "png",
             })

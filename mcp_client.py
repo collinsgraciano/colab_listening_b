@@ -51,7 +51,7 @@ def mcp_call(method, params=None):
         headers["Mcp-Session-Id"] = _session_id
     req = urllib.request.Request(MCP_URL, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=30) as resp:
             sid = resp.headers.get("Mcp-Session-Id") or resp.headers.get("mcp-session-id")
             if sid:
                 _session_id = sid
@@ -131,7 +131,13 @@ def poll_task(task_id, interval=40, max_wait=600):
     """
     elapsed = 0
     while elapsed < max_wait:
-        result = call_tool("check_task", {"task_id": task_id})
+        try:
+            result = call_tool("check_task", {"task_id": task_id})
+        except Exception as e:
+            print(f"  [{elapsed}s] Task {task_id[:16]}...: HTTP error ({type(e).__name__}: {e}), retrying in {interval}s...")
+            elapsed += interval
+            time.sleep(interval)
+            continue
         if "result" not in result:
             elapsed += interval
             time.sleep(interval)
