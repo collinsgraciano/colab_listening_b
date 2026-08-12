@@ -117,7 +117,7 @@ def generate_thumbnail(script: dict, scene_img: str, output_path: str,
             result = mcp_call_tool("generate_image", gen_args)
             task_id = mcp_parse_task_id(result)
             if task_id:
-                data = mcp_poll_task(task_id, interval=10, max_wait=120)
+                data = mcp_poll_task(task_id, interval=10, max_wait=180)
                 url = data.get("url", "")
                 if url and mcp_download_file(url, output_path):
                     size_kb = os.path.getsize(output_path) // 1024
