@@ -1,0 +1,238 @@
+"""Standalone LLM client for listening video script generation.
+
+Uses SenseNova DeepSeek V4 Flash (OpenAI-compatible API).
+Colab-compatible: no Windows-specific code.
+"""
+import json
+import re
+import os
+import urllib.request
+import urllib.error
+from pathlib import Path
+
+# SenseNova API (default and only LLM backend)
+SENSENOVA_BASE = os.environ.get("SENSENOVA_BASE", "https://token.sensenova.cn/v1")
+SENSENOVA_API_KEY = os.environ.get("SENSENOVA_API_KEY", "sk-8Tr86c17YvA5jBEoem2uYYAQGXGzmpDU")
+SENSENOVA_MODEL = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
+
+
+def _chat(messages, temperature=0.8, timeout=180, max_tokens=8192):
+    """Call SenseNova LLM chat completion, return content string."""
+    body = {
+        "model": SENSENOVA_MODEL,
+        "messages": messages,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+    }
+    data = json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(
+        f"{SENSENOVA_BASE}/chat/completions",
+        data=data,
+        method="POST",
+    )
+    req.add_header("Authorization", f"Bearer {SENSENOVA_API_KEY}")
+    req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            result = json.loads(resp.read().decode("utf-8"))
+            return result["choices"][0]["message"]["content"]
+    except urllib.error.HTTPError as e:
+        err = e.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"LLM HTTP {e.code}: {err}") from e
+
+
+def _repair_truncated_json(text):
+    """Attempt to repair truncated JSON by closing open strings, arrays, and objects."""
+    in_string = False
+    escape = False
+    stack = []
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if escape:
+            escape = False
+            i += 1
+            continue
+        if c == '\\' and in_string:
+            escape = True
+            i += 1
+            continue
+        if c == '"' and not escape:
+            in_string = not in_string
+        elif not in_string:
+            if c == '{':
+                stack.append('}')
+            elif c == '[':
+                stack.append(']')
+            elif c in ('}', ']'):
+                if stack and stack[-1] == c:
+                    stack.pop()
+        i += 1
+    if in_string:
+        text += '"'
+    text = re.sub(r',\s*$', '', text.strip())
+    while stack:
+        text += stack.pop()
+    return text
+
+
+def _extract_json(text):
+    """Extract JSON from LLM response (handles markdown fences + truncated JSON)."""
+    text = re.sub(r"^```(?:json)?\s*", "", text.strip())
+    text = re.sub(r"\s*```$", "", text.strip())
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        repaired = _repair_truncated_json(text)
+        return json.loads(repaired)
+
+
+def _build_listening_prompt(topic, cefr, used_dialogues=None):
+    """Build prompt for listening-practice lesson (18 lines + IPA + 繁中)."""
+    used_hint = ""
+    if used_dialogues:
+        used_hint = f"""
+IMPORTANT — AVOID DUPLICATES: The following dialogue scenarios have already been generated.
+Do NOT create dialogue that is too similar to these. Use a DIFFERENT situation, different speakers, different story:
+{chr(10).join(f"  - {d}" for d in used_dialogues[:20])}
+"""
+    return f"""You are an expert ESL teacher creating ENGLISH LISTENING PRACTICE content for overseas Chinese learners.
+
+Topic: {topic}
+CEFR Level: {cefr}
+Output: a JSON object ONLY (no markdown, no explanation).
+
+CONTENT REQUIREMENTS — This is for a LISTENING PRACTICE video targeting overseas Chinese:
+- The dialogue must be about EVERYDAY LIFE situations — practical, relatable.
+- Topics should be things people actually encounter: ordering food, asking for directions, making small talk, dealing with a problem at a store, etc.
+- The conversation should feel NATURAL and REALISTIC — like something you'd overhear in real life, not a textbook.
+- The dialogue must tell a COMPLETE story with a clear beginning, problem/development, and resolution.
+- Use modern, casual American English with natural expressions and idioms.
+{used_hint}
+TECHNICAL REQUIREMENTS:
+- Exactly 2 speakers with natural American English
+- Each speaker MUST have a clearly defined ROLE in the story (e.g. "customer" vs "waiter", "passenger" vs "check-in agent"). The role must be appropriate for the topic.
+- Exactly 18 dialogue lines (each under 15 words)
+- The dialogue must flow as a continuous, coherent story (not disconnected Q&A)
+- Every dialogue line MUST include:
+  - "text": the English sentence
+  - "phonetic": IPA phonetic transcription in /slashes/ (use proper IPA symbols)
+  - "zh": Traditional Chinese (繁體中文) translation
+  - "image_prompt": a detailed prompt describing what this character looks like AND what they are doing. MUST include: (1) the character's EXACT physical description (same every time for same speaker), (2) their role (e.g. "a waitress", "a customer"), (3) the scene location, (4) the action matching the dialogue text.
+  - "video_prompt": a detailed prompt for AI video generation. MUST include the SAME character description and action as image_prompt. MUST also include the dialogue text so the character appears to be speaking those words naturally (e.g. "The character says: 'Hi, I'd like a latte, please.' while gesturing toward the menu"). CRITICAL: the video MUST closely reference the uploaded reference image — the character's appearance, clothing, and the scene must match the reference image exactly.
+- "char_a_description": a detailed physical description of speaker 1 (gender, hair color, hairstyle, clothing). This MUST be used identically in ALL of speaker 1's image_prompt and video_prompt entries.
+- "char_b_description": a detailed physical description of speaker 2 (gender, hair color, hairstyle, clothing). This MUST be used identically in ALL of speaker 2's image_prompt and video_prompt entries.
+- "char_a_gender": "male" or "female" — the gender of speaker 1
+- "char_b_gender": "male" or "female" — the gender of speaker 2
+- "char_a_role": the role of speaker 1 in the story (e.g. "waitress", "customer")
+- "char_b_role": the role of speaker 2 in the story (e.g. "customer", "waitress")
+- "title": English title (e.g. "AT THE AIRPORT")
+- "title_zh": Traditional Chinese short title (max 6 characters, e.g. "在機場")
+- "scene_zh": Traditional Chinese scene description (e.g. "餐廳 · 點餐")
+- "story_hook": a compelling 1-sentence intro that sets the scene
+- "intro_zh": Traditional Chinese translation of the intro
+- "outro": a short closing line
+- "outro_zh": Traditional Chinese translation of the outro
+- "practice_intro_en": English instruction before the 跟讀 section
+- "practice_intro_zh": Traditional Chinese translation of the practice intro
+- ALL Chinese text MUST be in Traditional Chinese (繁體中文)
+- CRITICAL: the gender in char_a_description and char_b_description MUST be consistent. If speaker 1 is female, her description MUST say "a young woman" and ALL her image_prompt/video_prompt entries MUST say "a young woman". NEVER mix up genders.
+- CRITICAL: each speaker's description (hair, clothing, etc.) MUST be IDENTICAL across ALL their image_prompt and video_prompt entries. Do not change hair color, clothing, or any physical trait between lines.
+- CRITICAL: image_prompt and video_prompt MUST match the dialogue context exactly. If at a restaurant, prompts must say "restaurant", NOT "airport" or "supermarket".
+- CRITICAL: the scene location in image_prompt and video_prompt MUST be consistent throughout ALL lines.
+- CRITICAL: the speaker field in dialogue MUST use "char_a" or "char_b" (not the actual name).
+
+JSON schema:
+{{
+  "title": string,
+  "title_zh": string,
+  "scene_zh": string,
+  "lesson_type": "listening",
+  "story_hook": string,
+  "intro_zh": string,
+  "outro": string,
+  "outro_zh": string,
+  "practice_intro_en": string,
+  "practice_intro_zh": string,
+  "char_a_description": string,
+  "char_b_description": string,
+  "char_a_gender": string,
+  "char_b_gender": string,
+  "char_a_role": string,
+  "char_b_role": string,
+  "dialogue": [{{"speaker": string, "text": string, "phonetic": string, "zh": string, "image_prompt": string, "video_prompt": string}}]
+}}
+
+Topic: {topic}"""
+
+
+def _load_used_listening_summaries(lessons_dir=None):
+    """Load summaries of previously generated listening dialogues for anti-duplicate."""
+    if not lessons_dir:
+        return []
+    lessons_path = Path(lessons_dir)
+    if not lessons_path.exists():
+        return []
+    summaries = []
+    for f in lessons_path.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+            script = data.get("script", data)
+            if script.get("lesson_type") != "listening":
+                continue
+            title = script.get("title", "")
+            story = script.get("story_hook", "")
+            first_line = script.get("dialogue", [{}])[0].get("text", "")
+            summaries.append(f"{title}: {story} (starts: {first_line[:60]})")
+        except (json.JSONDecodeError, KeyError, IndexError):
+            continue
+    return summaries
+
+
+def generate_listening_script(topic, cefr="A2", lessons_dir=None):
+    """Generate a listening-practice lesson script via SenseNova DeepSeek V4 Flash."""
+    used_summaries = _load_used_listening_summaries(lessons_dir)
+    prompt = _build_listening_prompt(topic, cefr, used_dialogues=used_summaries)
+
+    last_error = None
+    for attempt in range(3):
+        try:
+            content = _chat(
+                [{"role": "user", "content": prompt}],
+                temperature=0.8 if attempt == 0 else 0.7,
+                max_tokens=8192,
+            )
+            script = _extract_json(content)
+            break
+        except (json.JSONDecodeError, RuntimeError) as e:
+            last_error = e
+            print(f"  [LLM retry {attempt+1}/3] {type(e).__name__}: {str(e)[:200]}")
+            if attempt < 2:
+                import time
+                time.sleep(5)
+    else:
+        raise RuntimeError(f"LLM script generation failed after 3 retries: {last_error}")
+
+    script["lesson_type"] = "listening"
+    script.setdefault("story_hook", "")
+    script.setdefault("intro_zh", "")
+    script.setdefault("outro", "That's all for today. Keep practicing!")
+    script.setdefault("outro_zh", "")
+    script.setdefault("title", "")
+    script.setdefault("title_zh", script.get("intro_zh", ""))
+    script.setdefault("practice_intro_en", "Now let's practice. Listen and repeat each sentence.")
+    script.setdefault("practice_intro_zh", "現在來練習。請跟著朗讀每一句。")
+    script.setdefault("char_a_description", "")
+    script.setdefault("char_b_description", "")
+    script.setdefault("char_a_gender", "male")
+    script.setdefault("char_b_gender", "female")
+    script.setdefault("char_a_role", "")
+    script.setdefault("char_b_role", "")
+
+    for line in script.get("dialogue", []):
+        line.setdefault("phonetic", "")
+        line.setdefault("zh", "")
+        line.setdefault("image_prompt", "")
+        line.setdefault("video_prompt", "")
+
+    return script

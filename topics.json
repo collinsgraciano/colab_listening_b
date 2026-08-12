@@ -1,0 +1,158 @@
+{
+  "日常生活 Daily Life": [
+    "Making Breakfast",
+    "Doing Laundry",
+    "Cleaning the House",
+    "Taking a Shower",
+    "Getting Dressed",
+    "Brushing Teeth",
+    "Making the Bed",
+    "Watering Plants",
+    "Taking Out the Trash",
+    "Reading a Book",
+    "Watching TV",
+    "Setting an Alarm",
+    "Feeding the Pet",
+    "Checking the Mail",
+    "Locking the Door"
+  ],
+  "旅行 Travel": [
+    "At the Airport Check-in",
+    "Going Through Security",
+    "Boarding the Plane",
+    "At the Hotel Reception",
+    "Asking for Directions",
+    "Taking a Taxi",
+    "Buying a Train Ticket",
+    "At the Bus Stop",
+    "Renting a Car",
+    "At the Gas Station",
+    "Checking into a Hostel",
+    "At the Travel Agency",
+    "Lost Luggage Claim",
+    "At the Tourist Information",
+    "Buying Souvenirs"
+  ],
+  "餐厅 Restaurant": [
+    "Ordering Fast Food",
+    "At a Fancy Restaurant",
+    "Ordering Coffee",
+    "Paying the Bill",
+    "Making a Reservation",
+    "Asking About the Menu",
+    "Complaining About Food",
+    "Ordering Delivery",
+    "At the Buffet",
+    "Dietary Restrictions"
+  ],
+  "购物 Shopping": [
+    "At the Supermarket",
+    "Buying Clothes",
+    "At the Checkout",
+    "Returning an Item",
+    "Comparing Prices",
+    "At the Electronics Store",
+    "Buying Shoes",
+    "At the Pharmacy",
+    "At the Bookstore",
+    "Bargaining at the Market"
+  ],
+  "工作 Work": [
+    "Job Interview",
+    "Meeting New Coworkers",
+    "Asking for a Raise",
+    "Calling in Sick",
+    "Office Meeting",
+    "Sending an Email",
+    "Using the Printer",
+    "Lunch Break",
+    "Working from Home",
+    "Quitting a Job"
+  ],
+  "学校 School": [
+    "First Day of School",
+    "Asking the Teacher a Question",
+    "In the Library",
+    "Group Project",
+    "Taking a Test",
+    "School Cafeteria",
+    "After-school Club",
+    "Parent-Teacher Meeting"
+  ],
+  "健康 Health": [
+    "At the Doctor's Office",
+    "At the Dentist",
+    "At the Pharmacy",
+    "Describing Symptoms",
+    "Making an Appointment",
+    "Emergency Room Visit",
+    "Getting a Checkup",
+    "Allergies"
+  ],
+  "社交 Social": [
+    "Meeting New Friends",
+    "Inviting Someone to a Party",
+    "Talking About Hobbies",
+    "Making Small Talk",
+    "Apologizing to a Friend",
+    "Borrowing Something",
+    "Saying Goodbye",
+    "Receiving a Compliment"
+  ],
+  "交通 Transportation": [
+    "At the Subway Station",
+    "Buying a Bus Pass",
+    "Asking for Bus Directions",
+    "In a Traffic Jam",
+    "Getting a Driver's License",
+    "Parking the Car",
+    "At the Car Wash",
+    "Reporting a Lost Item"
+  ],
+  "银行与邮局 Bank & Post": [
+    "Opening a Bank Account",
+    "Withdrawing Money",
+    "At the ATM",
+    "Sending a Package",
+    "Buying Stamps",
+    "Paying Bills",
+    "Exchanging Currency"
+  ],
+  "天气与环境 Weather": [
+    "Talking About the Weather",
+    "Preparing for a Storm",
+    "Sunny Day Plans",
+    "Rainy Day Activities",
+    "Seasonal Changes",
+    "Air Quality Warning"
+  ],
+  "科技 Technology": [
+    "Setting Up a New Phone",
+    "Connecting to Wi-Fi",
+    "Fixing a Computer Problem",
+    "Online Shopping",
+    "Video Call with Friends",
+    "Social Media Posting",
+    "Downloading an App",
+    "Privacy Settings"
+  ],
+  "娱乐 Entertainment": [
+    "Going to the Movies",
+    "At the Amusement Park",
+    "Playing Video Games",
+    "At a Concert",
+    "Booking Tickets Online",
+    "At the Museum",
+    "At the Gym",
+    "Going to the Beach"
+  ],
+  "家庭 Family": [
+    "Family Dinner",
+    "Helping Kids with Homework",
+    "Visiting Grandparents",
+    "Planning a Family Trip",
+    "Talking About the Day",
+    "Weekend Family Activity",
+    "Home alone Safety"
+  ]
+}
