@@ -489,6 +489,7 @@ def main():
 
     dialogue = script.get("dialogue", [])
     n = len(dialogue)
+    is_enhanced = (args.structure == "enhanced")
 
     char_a_desc = script.get("char_a_description", "friendly young man")
     char_b_desc = script.get("char_b_description", "friendly young woman")
