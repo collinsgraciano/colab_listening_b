@@ -52,8 +52,8 @@ def _save_checkpoint(work_dir: Path, step: str, **extra):
     print(f"  [Checkpoint] Saved: {step}")
 
 
-def _load_checkpoint(work_dir: Path, topic: str, cefr: str, structure: str) -> dict:
-    """Load checkpoint if it matches the current topic/cefr/structure."""
+def _load_checkpoint(work_dir: Path) -> dict:
+    """Load checkpoint regardless of topic/cefr/structure — just continue last unfinished run."""
     cp_path = work_dir / "checkpoint.json"
     if not cp_path.exists():
         return {}
@@ -61,9 +61,7 @@ def _load_checkpoint(work_dir: Path, topic: str, cefr: str, structure: str) -> d
         cp = json.loads(cp_path.read_text(encoding="utf-8"))
     except Exception:
         return {}
-    if cp.get("topic") == topic and cp.get("cefr") == cefr and cp.get("structure") == structure:
-        return cp
-    return {}
+    return cp
 
 
 def _step_done(checkpoint: dict, step: str) -> bool:
@@ -434,9 +432,13 @@ def main():
 
     # Resume: load checkpoint if --resume is set
     if args.resume:
-        checkpoint = _load_checkpoint(work_dir, topic, args.cefr, args.structure)
+        checkpoint = _load_checkpoint(work_dir)
         if checkpoint:
             print(f"  [Resume] Found checkpoint: {checkpoint.get('completed_steps', [])}")
+            # Override topic from checkpoint so we continue the exact same run
+            if checkpoint.get("topic"):
+                args.topic = checkpoint["topic"]
+                topic = args.topic
         else:
             print(f"  [Resume] No matching checkpoint, starting fresh.")
     else:
