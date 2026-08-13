@@ -15,6 +15,7 @@ Steps:
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -32,6 +33,41 @@ from timeline import build_listening_timeline, build_srt_from_timeline
 from video_compose import compose_listening
 from grouping_b import build_dialogue_groups, merge_group_prompt
 from topic_manager import pick_random_topic
+
+
+def _save_checkpoint(work_dir: Path, step: str, **extra):
+    """Save progress to checkpoint.json for resume support."""
+    cp_path = work_dir / "checkpoint.json"
+    cp = {}
+    if cp_path.exists():
+        try:
+            cp = json.loads(cp_path.read_text(encoding="utf-8"))
+        except Exception:
+            cp = {}
+    if step not in cp.get("completed_steps", []):
+        cp.setdefault("completed_steps", []).append(step)
+    cp.update(extra)
+    cp["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+    cp_path.write_text(json.dumps(cp, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(f"  [Checkpoint] Saved: {step}")
+
+
+def _load_checkpoint(work_dir: Path, topic: str, cefr: str, structure: str) -> dict:
+    """Load checkpoint if it matches the current topic/cefr/structure."""
+    cp_path = work_dir / "checkpoint.json"
+    if not cp_path.exists():
+        return {}
+    try:
+        cp = json.loads(cp_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if cp.get("topic") == topic and cp.get("cefr") == cefr and cp.get("structure") == structure:
+        return cp
+    return {}
+
+
+def _step_done(checkpoint: dict, step: str) -> bool:
+    return step in checkpoint.get("completed_steps", [])
 
 
 def _validate_script(script: dict, num_lines: int, enhanced: bool = False) -> tuple[bool, str]:
@@ -366,10 +402,12 @@ def main():
     parser.add_argument("--topics-file", default=str(Path(__file__).parent / "topics.json"), help="Path to topics.json")
     parser.add_argument("--used-topics-file", default=str(Path(__file__).parent / "used_topics.json"), help="Path to used_topics.json")
     parser.add_argument("--num-lines", type=int, default=18, help="Number of dialogue lines (default 18)")
-    parser.add_argument("--mcp-token", default=None, help="TJGenerators MCP OAuth token (optional on Windows, required on Colab)")
+    parser.add_argument("--mcp-tokens", default=None, help="TJGenerators MCP OAuth tokens, comma-separated for multi-token rotation")
+    parser.add_argument("--mcp-token", default=None, help="(Deprecated) Single MCP token. Use --mcp-tokens instead.")
     parser.add_argument("--api-key", default=None, help="SenseNova API key (or set SENSENOVA_API_KEY env var)")
     parser.add_argument("--structure", default="original", choices=["original", "enhanced"],
                         help="Video structure: 'original' (4-chapter) or 'enhanced' (7-chapter with vocab+quiz+slow)")
+    parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
     args = parser.parse_args()
 
     # Set API key from arg if provided
@@ -394,6 +432,20 @@ def main():
     work_dir = Path(args.output).resolve()
     work_dir.mkdir(parents=True, exist_ok=True)
 
+    # Resume: load checkpoint if --resume is set
+    if args.resume:
+        checkpoint = _load_checkpoint(work_dir, topic, args.cefr, args.structure)
+        if checkpoint:
+            print(f"  [Resume] Found checkpoint: {checkpoint.get('completed_steps', [])}")
+        else:
+            print(f"  [Resume] No matching checkpoint, starting fresh.")
+    else:
+        # Clear old checkpoint
+        cp_path = work_dir / "checkpoint.json"
+        if cp_path.exists():
+            cp_path.unlink()
+        checkpoint = {}
+
     img_dir = work_dir / "images"
     clips_dir = work_dir / "clips"
     audio_dir = work_dir / "audio"
@@ -405,10 +457,15 @@ def main():
     # ===== Step 0: Generate script (with validation + retry) =====
     print("=" * 60)
     print("Step 0: Generating script via LLM (SenseNova DeepSeek V4 Flash)...")
-    script = _generate_script_with_retry(args.topic, args.cefr, args.lessons_dir,
-                                         args.num_lines, enhanced=(args.structure == "enhanced"))
     script_path = work_dir / "script.json"
-    script_path.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
+    if _step_done(checkpoint, "step0_script") and script_path.exists():
+        print("  [Resume] Loading existing script...")
+        script = json.loads(script_path.read_text(encoding="utf-8"))
+    else:
+        script = _generate_script_with_retry(args.topic, args.cefr, args.lessons_dir,
+                                             args.num_lines, enhanced=(args.structure == "enhanced"))
+        script_path.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
+        _save_checkpoint(work_dir, "step0_script", topic=topic, cefr=args.cefr, structure=args.structure)
     print(f"  Script saved: {script_path}")
     print(f"  Title: {script.get('title', '')}")
     print(f"  Dialogue lines: {len(script.get('dialogue', []))}")
@@ -416,7 +473,14 @@ def main():
     # ===== Step 1: Initialize MCP =====
     print("\n" + "=" * 60)
     print("Step 1: Initializing TJGenerators MCP...")
-    initialize(token=args.mcp_token)
+    # Parse tokens: --mcp-tokens takes priority, fall back to --mcp-token (deprecated)
+    raw_tokens = args.mcp_tokens or args.mcp_token or ""
+    tokens = [t.strip() for t in raw_tokens.split(",") if t.strip()]
+    if not tokens:
+        # Windows local: auto-detect
+        initialize()
+    else:
+        initialize(tokens=tokens)
     print("  MCP connected.")
 
     # ===== Step 2: Concurrent image generation + TTS audio =====
@@ -435,48 +499,113 @@ def main():
         (f"Scene background, {scene} interior, wide shot, showing all key elements of the scene, 3D cartoon style, no characters, no text, 16:9", "scene.png"),
     ]
 
-    # Start TTS thread immediately (only depends on script, not images)
-    tts_results = {}
-    is_enhanced = (args.structure == "enhanced")
-    tts_thread = threading.Thread(
-        target=_generate_tts,
-        args=(script, dialogue, audio_dir, tts_results, is_enhanced),
-        daemon=True,
-    )
-    tts_thread.start()
-    print("  [TTS] Started TTS generation in background thread.")
+    # Check if Step 2 already completed (images + audio exist)
+    step2_done = _step_done(checkpoint, "step2_images_tts")
+    char_scene_file = img_dir / "char_scene.png"
+    scene_file = img_dir / "scene.png"
+    all_audio_exist = all((audio_dir / f"dialogue_{i}.mp3").exists() for i in range(n))
+    all_zh_exist = all((audio_dir / f"zh_{i}.mp3").exists() for i in range(n))
+    narration_files = ["intro.mp3", "outro.mp3", "practice_intro.mp3"]
+    narration_exist = all((audio_dir / f).exists() for f in narration_files)
 
-    # Generate images in main thread (TTS runs concurrently)
-    image_urls = {}
-    image_failed = False
-    for prompt, filename in image_prompts:
-        print(f"  [Image] Generating: {filename}...")
-        result = call_tool("generate_image", {
-            "prompt": prompt,
-            "provider": "frontier",
-            "quality": "high",
-            "image_size": "landscape_16_9",
-            "output_format": "png",
-        })
-        task_id = parse_task_id(result)
-        data = poll_task(task_id, interval=10, max_wait=600)
-        url = data.get("url", "")
-        if url:
-            dest = str(img_dir / filename)
-            download_file(url, dest)
-            image_urls[filename] = url
-            print(f"    [Image] Downloaded: {dest}")
-        else:
-            print(f"    [Image] FATAL: No URL for {filename}")
-            image_failed = True
+    if step2_done and char_scene_file.exists() and scene_file.exists() and all_audio_exist and all_zh_exist and narration_exist:
+        print("  [Resume] Step 2 already done, loading existing images + audio...")
+        # Re-upload images to get CDN URLs (needed for video generation)
+        image_urls = {}
+        for _, filename in [("a", "char_scene.png"), ("b", "scene.png")]:
+            filepath = str(img_dir / filename)
+            print(f"  [Image] Re-uploading {filename} for CDN URL...")
+            try:
+                upload_result = call_tool("file_upload", {"file_path": filepath})
+                if "result" in upload_result:
+                    for item in upload_result["result"].get("content", []):
+                        if item.get("type") == "resource":
+                            res_json = json.loads(item.get("resource", {}).get("text", ""))
+                            image_urls[filename] = res_json.get("file_url", "")
+                        elif item.get("type") == "text":
+                            m = re.search(r"(https?://[^\s`'\")]+)", item.get("text", ""))
+                            if m:
+                                image_urls[filename] = m.group(1)
+            except Exception as e:
+                print(f"    [Image] Re-upload failed: {e}")
 
-    if image_failed:
-        missing = [fn for fn, _ in image_prompts if fn not in image_urls]
-        print(f"  [Image] ABORTING: Missing required images: {missing}")
-        tts_thread.join(timeout=5)
-        sys.exit(1)
+        normal_paths = [str(audio_dir / f"dialogue_{i}.mp3") for i in range(n)]
+        zh_paths = [str(audio_dir / f"zh_{i}.mp3") for i in range(n)]
+        dialogue_durations = [_get_audio_duration(p) for p in normal_paths]
+        narration = {}
+        for name in ["intro", "outro", "practice_intro"]:
+            narration[name] = str(audio_dir / f"{name}.mp3")
+        tts_results = {
+            "narration": narration,
+            "normal_paths": normal_paths,
+            "dialogue_durations": dialogue_durations,
+            "zh_paths": zh_paths,
+            "vocab_paths": [],
+            "slow_paths": [],
+            "slow_durations": [],
+            "quiz_paths": [],
+        }
+        if is_enhanced:
+            vocab_count = len(script.get("vocabulary", []))
+            quiz_count = len(script.get("comprehension_questions", []))
+            tts_results["vocab_paths"] = [str(audio_dir / f"vocab_{i}.mp3") for i in range(vocab_count) if (audio_dir / f"vocab_{i}.mp3").exists()]
+            tts_results["quiz_paths"] = [str(audio_dir / f"quiz_{i}.mp3") for i in range(quiz_count) if (audio_dir / f"quiz_{i}.mp3").exists()]
+            tts_results["slow_paths"] = [str(audio_dir / f"dialogue_slow_{i}.mp3") for i in range(n) if (audio_dir / f"dialogue_slow_{i}.mp3").exists()]
+            tts_results["slow_durations"] = [_get_audio_duration(p) if p else 0.0 for p in tts_results["slow_paths"]]
+        print("  [Resume] Images + audio loaded.")
+    else:
+        # Start TTS thread immediately (only depends on script, not images)
+        tts_results = {}
+        tts_thread = threading.Thread(
+            target=_generate_tts,
+            args=(script, dialogue, audio_dir, tts_results, is_enhanced),
+            daemon=True,
+        )
+        tts_thread.start()
+        print("  [TTS] Started TTS generation in background thread.")
 
-    print("  [Image] All images done. Waiting for TTS...")
+        # Generate images in main thread (TTS runs concurrently)
+        image_urls = {}
+        image_failed = False
+        for prompt, filename in image_prompts:
+            print(f"  [Image] Generating: {filename}...")
+            result = call_tool("generate_image", {
+                "prompt": prompt,
+                "provider": "frontier",
+                "quality": "high",
+                "image_size": "landscape_16_9",
+                "output_format": "png",
+            })
+            task_id = parse_task_id(result)
+            data = poll_task(task_id, interval=10, max_wait=600)
+            url = data.get("url", "")
+            if url:
+                dest = str(img_dir / filename)
+                download_file(url, dest)
+                image_urls[filename] = url
+                print(f"    [Image] Downloaded: {dest}")
+            else:
+                print(f"    [Image] FATAL: No URL for {filename}")
+                image_failed = True
+
+        if image_failed:
+            missing = [fn for fn, _ in image_prompts if fn not in image_urls]
+            print(f"  [Image] ABORTING: Missing required images: {missing}")
+            tts_thread.join(timeout=5)
+            sys.exit(1)
+
+        print("  [Image] All images done. Waiting for TTS...")
+
+    # Wait for TTS if it was started (not in resume mode)
+    if 'tts_thread' in dir() or 'tts_thread' in locals():
+        try:
+            if tts_thread.is_alive():
+                tts_thread.join()
+        except NameError:
+            pass
+
+    # Save Step 2 checkpoint
+    _save_checkpoint(work_dir, "step2_images_tts")
 
     # ===== Step 3: Generate video clips (images ready, TTS may still be running) =====
     print("\n" + "=" * 60)
@@ -486,7 +615,7 @@ def main():
     char_scene_url = image_urls.get("char_scene.png", "")
 
     # 方案 B: group consecutive lines regardless of speaker (need TTS durations first)
-    if tts_thread.is_alive():
+    if 'tts_thread' in locals() and tts_thread.is_alive():
         print("  [Group] Waiting for TTS to finish so we can group by audio durations...")
         tts_thread.join()
     print("  >> TTS audio done (needed for grouping).")
@@ -525,19 +654,28 @@ def main():
             "generate_audio": False,  # group clips: audio overlaid from TTS
         })
 
-    # Start video generation in a thread (TTS may still be running)
-    clip_paths = [None] * len(video_tasks)
-    video_thread = threading.Thread(
-        target=_generate_video_clips,
-        args=(video_tasks, clips_dir, clip_paths),
-        daemon=True,
-    )
-    video_thread.start()
+    # Check if Step 3 already completed (all clips exist)
+    step3_done = _step_done(checkpoint, "step3_video")
+    all_clips_exist = all((clips_dir / f"clip_{i}.mp4").exists() and os.path.getsize(clips_dir / f"clip_{i}.mp4") > 500000
+                          for i in range(len(video_tasks)))
+    if step3_done and all_clips_exist:
+        print("  [Resume] Step 3 already done, loading existing clips...")
+        clip_paths = [str(clips_dir / f"clip_{i}.mp4") for i in range(len(video_tasks))]
+    else:
+        # Start video generation in a thread (TTS may still be running)
+        clip_paths = [None] * len(video_tasks)
+        video_thread = threading.Thread(
+            target=_generate_video_clips,
+            args=(video_tasks, clips_dir, clip_paths),
+            daemon=True,
+        )
+        video_thread.start()
 
-    # Wait for video to complete (TTS already joined above)
-    print("  Waiting for video clips to complete...")
-    video_thread.join()
-    print("  >> Video clips done.")
+        # Wait for video to complete (TTS already joined above)
+        print("  Waiting for video clips to complete...")
+        video_thread.join()
+        print("  >> Video clips done.")
+        _save_checkpoint(work_dir, "step3_video")
 
     # Collect results — keep None entries to preserve index alignment
     narration = tts_results.get("narration", {})
@@ -618,7 +756,15 @@ def main():
     # ===== Step 4: Build timeline + SRT =====
     print("\n" + "=" * 60)
     print("Step 4: Building timeline + SRT...")
-    tts = TTSEngine()
+    srt_path = sub_dir / "output.srt"
+    meta_path = sub_dir / "meta.json"
+    if _step_done(checkpoint, "step4_timeline") and srt_path.exists() and meta_path.exists():
+        print("  [Resume] Loading existing timeline + SRT...")
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        timeline = meta["timeline"]
+        srt = srt_path.read_text(encoding="utf-8")
+    else:
+        tts = TTSEngine()
     if is_enhanced:
         from enhanced.timeline_enhanced import build_enhanced_timeline, build_srt_from_timeline_enhanced
         slow_paths = tts_results.get("slow_paths", [])
@@ -732,6 +878,7 @@ def main():
     meta_path = sub_dir / "meta.json"
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  Meta saved: {meta_path}")
+    _save_checkpoint(work_dir, "step4_timeline")
 
     # ===== Step 4.5: Generate YouTube metadata + thumbnail =====
     print("\n" + "-" * 60)
@@ -740,27 +887,31 @@ def main():
 
     scene_img_full = str(img_dir / "scene.png")
     thumb_path = str(work_dir / "thumbnail.jpg")
-    # Use char_scene.png CDN URL as reference for thumbnail character consistency
-    char_scene_cdn = image_urls.get("char_scene.png", "")
-    generate_thumbnail(
-        script=script,
-        scene_img=scene_img_full,
-        output_path=thumb_path,
-        mcp_call_tool=call_tool,
-        mcp_parse_task_id=parse_task_id,
-        mcp_poll_task=poll_task,
-        mcp_download_file=download_file,
-        structure=args.structure,
-        char_scene_url=char_scene_cdn,
-    )
-
     yt_meta_path = str(work_dir / "youtube_metadata.json")
-    save_youtube_metadata(
-        script=script,
-        timeline=timeline,
-        output_path=yt_meta_path,
-        structure=args.structure,
-    )
+    if _step_done(checkpoint, "step4.5_thumbnail") and os.path.exists(thumb_path) and os.path.exists(yt_meta_path):
+        print("  [Resume] Thumbnail + YouTube metadata already exist, skipping...")
+    else:
+        # Use char_scene.png CDN URL as reference for thumbnail character consistency
+        char_scene_cdn = image_urls.get("char_scene.png", "")
+        generate_thumbnail(
+            script=script,
+            scene_img=scene_img_full,
+            output_path=thumb_path,
+            mcp_call_tool=call_tool,
+            mcp_parse_task_id=parse_task_id,
+            mcp_poll_task=poll_task,
+            mcp_download_file=download_file,
+            structure=args.structure,
+            char_scene_url=char_scene_cdn,
+        )
+
+        save_youtube_metadata(
+            script=script,
+            timeline=timeline,
+            output_path=yt_meta_path,
+            structure=args.structure,
+        )
+        _save_checkpoint(work_dir, "step4.5_thumbnail")
 
     # ===== Step 5: Compose final video =====
     print("\n" + "=" * 60)
@@ -770,42 +921,48 @@ def main():
     def progress_cb(pct, msg):
         print(f"  [{pct}%] {msg}")
 
-    if is_enhanced:
-        from enhanced.video_compose_enhanced import compose_listening_enhanced
-        final_path = compose_listening_enhanced(
-            work_dir=str(work_dir),
-            clip_paths=clip_paths_final,
-            timeline=timeline,
-            script=script,
-            narration=narration,
-            normal_paths=normal_paths,
-            zh_paths=zh_paths,
-            slow_paths=tts_results.get("slow_paths", []),
-            vocab_paths=tts_results.get("vocab_paths", []),
-            quiz_paths=tts_results.get("quiz_paths", []),
-            scene_img=scene_img,
-            srt_dir=str(sub_dir),
-            pad=args.pad,
-            progress_cb=progress_cb,
-            group_info=group_info,
-            line_to_group=line_to_group,
-        )
+    final_video_path = vid_dir / "final_video.mp4"
+    if _step_done(checkpoint, "step5_compose") and final_video_path.exists():
+        print("  [Resume] Final video already exists, skipping compose...")
+        final_path = str(final_video_path)
     else:
-        final_path = compose_listening(
-            work_dir=str(work_dir),
-            clip_paths=clip_paths_final,
-            timeline=timeline,
-            script=script,
-            narration=narration,
-            normal_paths=normal_paths,
-            zh_paths=zh_paths,
-            scene_img=scene_img,
-            srt_dir=str(sub_dir),
-            pad=args.pad,
-            progress_cb=progress_cb,
-            group_info=group_info,
-            line_to_group=line_to_group,
-        )
+        if is_enhanced:
+            from enhanced.video_compose_enhanced import compose_listening_enhanced
+            final_path = compose_listening_enhanced(
+                work_dir=str(work_dir),
+                clip_paths=clip_paths_final,
+                timeline=timeline,
+                script=script,
+                narration=narration,
+                normal_paths=normal_paths,
+                zh_paths=zh_paths,
+                slow_paths=tts_results.get("slow_paths", []),
+                vocab_paths=tts_results.get("vocab_paths", []),
+                quiz_paths=tts_results.get("quiz_paths", []),
+                scene_img=scene_img,
+                srt_dir=str(sub_dir),
+                pad=args.pad,
+                progress_cb=progress_cb,
+                group_info=group_info,
+                line_to_group=line_to_group,
+            )
+        else:
+            final_path = compose_listening(
+                work_dir=str(work_dir),
+                clip_paths=clip_paths_final,
+                timeline=timeline,
+                script=script,
+                narration=narration,
+                normal_paths=normal_paths,
+                zh_paths=zh_paths,
+                scene_img=scene_img,
+                srt_dir=str(sub_dir),
+                pad=args.pad,
+                progress_cb=progress_cb,
+                group_info=group_info,
+                line_to_group=line_to_group,
+            )
+        _save_checkpoint(work_dir, "step5_compose")
 
     print("\n" + "=" * 60)
     print(f"DONE! Final video: {final_path}")

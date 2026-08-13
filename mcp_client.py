@@ -1,8 +1,10 @@
 """TJGenerators MCP client — calls MCP server directly via HTTP JSON-RPC.
 
+Supports multiple tokens with automatic rotation on "积分" (credits) errors.
+
 Usage:
     from mcp_client import initialize, call_tool, poll_task
-    initialize()
+    initialize(tokens=["token1", "token2", "token3"])
     result = call_tool("generate_image", {"prompt": "...", "provider": "frontier"})
     task_id = parse_task_id(result)
     data = poll_task(task_id, interval=10)
@@ -19,18 +21,24 @@ import urllib.error
 sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 
 MCP_URL = "https://ai-generator.tuanjie.cn/mcp"
-# Token from C:\Users\Administrator\.codely-cli\mcp-oauth-tokens.json
-import os
+
+# Multi-token support
+_TOKENS = []
+_token_idx = 0
+TOKEN = ""
+_session_id = None
+_msg_id = 0
+
+# Windows local: auto-detect token from ~/.codely-cli/mcp-oauth-tokens.json
 _TOKEN_FILE = os.path.join(os.environ.get("USERPROFILE", ""), ".codely-cli", "mcp-oauth-tokens.json")
 try:
     with open(_TOKEN_FILE, encoding="utf-8") as f:
-        _tokens = json.load(f)
-    TOKEN = next(t["token"]["accessToken"] for t in _tokens if t["serverName"] == "TJGenerators")
+        _tokens_data = json.load(f)
+    _local_token = next(t["token"]["accessToken"] for t in _tokens_data if t["serverName"] == "TJGenerators")
+    _TOKENS = [_local_token]
+    TOKEN = _local_token
 except Exception:
-    TOKEN = ""  # Fallback: user must set manually
-
-_session_id = None
-_msg_id = 0
+    pass  # User must pass tokens via initialize()
 
 
 def _next_id():
@@ -39,7 +47,31 @@ def _next_id():
     return _msg_id
 
 
+def _is_credit_error(text: str) -> bool:
+    """Check if an error message indicates insufficient credits."""
+    return "积分" in text or "credit" in text.lower() or "余额" in text or "quota" in text.lower()
+
+
+def _rotate_token():
+    """Switch to the next available token. Raises if all tokens exhausted."""
+    global _token_idx, TOKEN, _session_id
+    _token_idx += 1
+    if _token_idx >= len(_TOKENS):
+        raise RuntimeError("ALL_MCP_TOKENS_EXHAUSTED: All tokens have insufficient credits.")
+    TOKEN = _TOKENS[_token_idx]
+    _session_id = None  # force re-initialize with new token
+    print(f"  [MCP] 积分不足, switching to token #{_token_idx+1}/{len(_TOKENS)}...")
+    # Re-initialize MCP session with new token
+    mcp_call("initialize", {
+        "protocolVersion": "2024-11-05",
+        "capabilities": {},
+        "clientInfo": {"name": "codely-cli", "version": "1.0"},
+    })
+    mcp_notify("notifications/initialized")
+
+
 def mcp_call(method, params=None):
+    """Call MCP method. Auto-rotates token on credit errors."""
     global _session_id
     msg_id = _next_id()
     payload = {"jsonrpc": "2.0", "method": method, "id": msg_id}
@@ -60,7 +92,11 @@ def mcp_call(method, params=None):
         sid = e.headers.get("Mcp-Session-Id") or e.headers.get("mcp-session-id")
         if sid:
             _session_id = sid
-        body = e.read().decode("utf-8")
+        body = e.read().decode("utf-8", errors="replace")
+        # Check for credit errors and rotate token
+        if _is_credit_error(body) and len(_TOKENS) > 1:
+            _rotate_token()
+            return mcp_call(method, params)  # retry with new token
         print(f"HTTP {e.code}: {body[:500]}")
         raise
 
@@ -82,28 +118,49 @@ def mcp_notify(method, params=None):
         pass
 
 
-def initialize(token=None):
+def initialize(token=None, tokens=None):
     """Initialize MCP session.
 
-    On Colab (or when token is passed), use the provided token.
+    Args:
+        token: Single token string (backward compatible).
+        tokens: List of token strings (multi-token with auto-rotation on credit errors).
+    On Colab, pass tokens=[...] for multi-token support.
     On Windows local, token auto-detected from ~/.codely-cli/mcp-oauth-tokens.json.
     """
-    global TOKEN
-    if token:
+    global _TOKENS, _token_idx, TOKEN
+    if tokens:
+        _TOKENS = tokens
+        _token_idx = 0
+        TOKEN = tokens[0]
+    elif token:
+        _TOKENS = [token]
+        _token_idx = 0
         TOKEN = token
     if not TOKEN:
-        raise RuntimeError("No MCP token. Pass token to initialize(token='...') or set MCP_TOKEN env var.")
+        raise RuntimeError("No MCP token. Pass tokens=['...'] or token='...' to initialize().")
     result = mcp_call("initialize", {
         "protocolVersion": "2024-11-05",
         "capabilities": {},
         "clientInfo": {"name": "codely-cli", "version": "1.0"},
     })
     mcp_notify("notifications/initialized")
+    print(f"  [MCP] Initialized with {len(_TOKENS)} token(s).")
     return result
 
 
 def call_tool(name, arguments):
-    return mcp_call("tools/call", {"name": name, "arguments": arguments})
+    """Call an MCP tool. Auto-rotates token on credit errors in response."""
+    result = mcp_call("tools/call", {"name": name, "arguments": arguments})
+    # Check response content for credit errors
+    if "result" in result:
+        content = result["result"].get("content", [])
+        for item in content:
+            if item.get("type") == "text":
+                text = item.get("text", "")
+                if _is_credit_error(text) and len(_TOKENS) > 1:
+                    _rotate_token()
+                    return call_tool(name, arguments)  # retry with new token
+    return result
 
 
 def parse_task_id(result):
@@ -134,6 +191,9 @@ def poll_task(task_id, interval=40, max_wait=600):
         try:
             result = call_tool("check_task", {"task_id": task_id})
         except Exception as e:
+            err_str = str(e)
+            if "ALL_MCP_TOKENS_EXHAUSTED" in err_str:
+                raise  # propagate — all tokens dead
             print(f"  [{elapsed}s] Task {task_id[:16]}...: HTTP error ({type(e).__name__}: {e}), retrying in {interval}s...")
             elapsed += interval
             time.sleep(interval)
@@ -145,7 +205,6 @@ def poll_task(task_id, interval=40, max_wait=600):
 
         content = result["result"].get("content", [])
         task_data = {}
-        # Keep the FULL raw response for debugging
         task_data["raw_response"] = json.dumps(result, ensure_ascii=False)
 
         # 1. Try resource block (contains JSON with output URLs + error info)
@@ -158,19 +217,16 @@ def poll_task(task_id, interval=40, max_wait=600):
                     task_data["raw_json"] = json.dumps(res_json, ensure_ascii=False)
                     out = res_json.get("output") or {}
                     data = out.get("data") or {}
-                    # Preserve error message if present
                     if res_json.get("error"):
                         task_data["error"] = res_json["error"]
                     elif data.get("error"):
                         task_data["error"] = data["error"]
                     elif data.get("message"):
                         task_data["error"] = data["message"]
-                    # Video URL: output.data.result.video_url
                     result_obj = data.get("result") or {}
                     url = result_obj.get("video_url", "") or result_obj.get("image_url", "")
                     if url:
                         task_data["url"] = url
-                    # Image URL: output.data.imageUrls[0] (array)
                     if "url" not in task_data:
                         img_urls = data.get("imageUrls") or []
                         if img_urls and isinstance(img_urls, list) and img_urls[0]:
@@ -179,7 +235,7 @@ def poll_task(task_id, interval=40, max_wait=600):
                 except json.JSONDecodeError:
                     pass
 
-        # 2. Also check text block for URL (Markdown ![](URL)) — even if resource block was parsed
+        # 2. Also check text block for URL (Markdown ![](URL))
         if "url" not in task_data:
             for item in content:
                 if item.get("type") == "text":
@@ -192,7 +248,6 @@ def poll_task(task_id, interval=40, max_wait=600):
                             task_data["status"] = "running"
                         elif "failed" in text.lower() or "失败" in text:
                             task_data["status"] = "failed"
-                    # Extract URL from Markdown
                     m = re.search(r"!\[.*?\]\((https?://[^\s)]+)\)", text)
                     if m:
                         task_data["url"] = m.group(1)
