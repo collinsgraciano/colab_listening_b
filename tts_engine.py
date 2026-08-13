@@ -190,11 +190,15 @@ class TTSEngine:
 
     @staticmethod
     def _loudnorm(input_path: str, output_path: str | None = None):
-        """Apply loudnorm filter and replace original file.
-        Falls back to simple volume boost (+6dB) if loudnorm fails.
+        """Apply loudnorm + volume normalization to target -16 dB RMS.
+
+        Two-step: (1) loudnorm linear pass, (2) if still too quiet, apply
+        volume boost via volumedetect to hit target RMS.
         """
         if output_path is None:
             output_path = input_path.replace(".mp3", "_norm.mp3")
+
+        # Step 1: loudnorm
         result = subprocess.run(
             ["ffmpeg", "-y", "-i", input_path,
              "-af", "loudnorm=I=-16:TP=-1.5:LRA=11",
@@ -214,6 +218,32 @@ class TTSEngine:
             )
             if os.path.exists(fallback) and os.path.getsize(fallback) > 1000:
                 os.replace(fallback, input_path)
+
+        # Step 2: Check if still too quiet, apply extra boost
+        try:
+            detect = subprocess.run(
+                ["ffmpeg", "-i", input_path, "-af", "volumedetect",
+                 "-f", "null", "-"],
+                capture_output=True, text=True, timeout=15)
+            stderr = detect.stderr
+            import re
+            m = re.search(r"mean_volume:\s*(-?\d+\.?\d*)\s*dB", stderr)
+            if m:
+                mean_db = float(m.group(1))
+                if mean_db < -20:
+                    # Need extra boost: target -16 dB
+                    boost = -16 - mean_db
+                    boosted = input_path.replace(".mp3", "_boost.mp3")
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-i", input_path,
+                         "-af", f"volume={boost}dB,alimiter=limit=0.95",
+                         "-c:a", "libmp3lame", "-b:a", "128k", boosted],
+                        capture_output=True, timeout=30)
+                    if os.path.exists(boosted) and os.path.getsize(boosted) > 1000:
+                        os.replace(boosted, input_path)
+                        print(f"    [loudnorm] Extra boost: +{boost:.1f}dB (was {mean_db:.1f}dB)")
+        except Exception:
+            pass
 
     def synth_english(self, text: str, voice: str, out_path: str,
                       rate: str = "+0%") -> float:
