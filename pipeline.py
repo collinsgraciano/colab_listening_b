@@ -981,7 +981,12 @@ def main():
     def progress_cb(pct, msg):
         print(f"  [{pct}%] {msg}")
 
-    final_video_path = vid_dir / "final_video.mp4"
+    # Build video filename from YouTube title
+    yt_title = script.get("youtube_title", script.get("title", "final"))
+    safe_vid_name = re.sub(r'[\U0001F000-\U0001FFFF]', '', yt_title)  # remove emoji
+    safe_vid_name = re.sub(r'[\\/:*?"<>|]', '', safe_vid_name).strip()
+    safe_vid_name = re.sub(r'\s+', '_', safe_vid_name)[:80] or "final_video"
+    final_video_path = vid_dir / f"{safe_vid_name}.mp4"
     if _step_done(checkpoint, "step5_compose") and final_video_path.exists():
         print("  [Resume] Final video already exists, skipping compose...")
         final_path = str(final_video_path)

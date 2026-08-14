@@ -691,7 +691,13 @@ def compose_listening(
 
     # --- Burn subtitles via Pillow overlay ---
     _cb(90, "Burning subtitles (Pillow overlay)...")
-    final_path = str(vid_dir / "final_video.mp4")
+    # Use YouTube title as video filename
+    import re as _re
+    _yt = script.get("youtube_title", script.get("title", "final_video"))
+    _safe = _re.sub(r'[\U0001F000-\U0001FFFF]', '', _yt)
+    _safe = _re.sub(r'[\\/:*?"<>|]', '', _safe).strip()
+    _safe = _re.sub(r'\s+', '_', _safe)[:80] or "final_video"
+    final_path = str(vid_dir / f"{_safe}.mp4")
 
     # Extract dialogue subtitle entries from timeline
     subtitle_entries = []
