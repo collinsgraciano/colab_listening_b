@@ -30,16 +30,20 @@ Do NOT create dialogue that is too similar to these. Use a DIFFERENT situation, 
 """
     return f"""You are an expert ESL teacher creating ENGLISH LISTENING PRACTICE content for overseas Chinese learners.
 
+CORE MISSION: 帮助海外华人用最地道最日常的英语，搞定真实生活中的每一个场景。
+
 Topic: {topic}
 CEFR Level: {cefr}
 Output: a JSON object ONLY (no markdown, no explanation).
 
 CONTENT REQUIREMENTS — This is for a LISTENING PRACTICE video targeting overseas Chinese:
-- The dialogue must be about EVERYDAY LIFE situations — practical, relatable.
-- Topics should be things people actually encounter: ordering food, asking for directions, making small talk, dealing with a problem at a store, etc.
-- The conversation should feel NATURAL and REALISTIC — like something you'd overhear in real life, not a textbook.
-- The dialogue must tell a COMPLETE story with a clear beginning, problem/development, and resolution.
-- Use modern, casual American English with natural expressions and idioms.
+- The dialogue must be about REAL-LIFE situations that overseas Chinese people actually face in English-speaking countries — practical, relatable, and immediately useful.
+- Topics should be things people encounter in daily life: ordering food, asking for directions, making small talk, dealing with a problem at a store, calling customer service, visiting a doctor, renting an apartment, banking, school registration, etc.
+- The conversation must feel 100% NATURAL and REALISTIC — like something you'd overhear in real life, NOT a textbook. Use filler words (like "um", "well", "so"), natural pauses, back-channeling ("oh really?", "that makes sense"), and conversational flow.
+- Characters should speak the way REAL Americans do in everyday life: contractions (don't, I'll, can't), casual phrasal verbs (pick up, figure out, run out of), common idioms and slang appropriate for the CEFR level, and natural sentence fragments.
+- The dialogue must tell a COMPLETE story with a clear beginning, problem/development, and resolution — but keep it grounded in reality, not exaggerated or melodramatic.
+- Include realistic communication patterns: clarifying questions, polite hedging ("I was wondering if...", "Would it be possible to..."), thanking, apologizing, expressing mild frustration or satisfaction naturally.
+- Every line should teach something useful — a phrase, expression, or communication strategy that the viewer can immediately apply in their own life.
 {used_hint}
 TECHNICAL REQUIREMENTS:
 - Exactly 2 speakers with natural American English
