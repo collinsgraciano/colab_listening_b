@@ -624,24 +624,31 @@ def main():
         image_failed = False
         for prompt, filename in image_prompts:
             print(f"  [Image] Generating: {filename}...")
-            result = call_tool("generate_image", {
-                "prompt": prompt,
-                "provider": "frontier",
-                "quality": "high",
-                "image_size": "landscape_16_9",
-                "output_format": "png",
-            })
-            task_id = parse_task_id(result)
-            data = poll_task(task_id, interval=10, max_wait=600)
-            url = data.get("url", "")
-            if url:
-                dest = str(img_dir / filename)
-                download_file(url, dest)
-                image_urls[filename] = url
-                print(f"    [Image] Downloaded: {dest}")
-            else:
-                print(f"    [Image] FATAL: No URL for {filename}")
-                image_failed = True
+            try:
+                result = call_tool("generate_image", {
+                    "prompt": prompt,
+                    "provider": "frontier",
+                    "quality": "high",
+                    "image_size": "landscape_16_9",
+                    "output_format": "png",
+                })
+                task_id = parse_task_id(result)
+                data = poll_task(task_id, interval=10, max_wait=600)
+                url = data.get("url", "")
+                if url:
+                    dest = str(img_dir / filename)
+                    download_file(url, dest)
+                    image_urls[filename] = url
+                    print(f"    [Image] Downloaded: {dest}")
+                else:
+                    print(f"    [Image] FATAL: No URL for {filename}")
+                    image_failed = True
+            except RuntimeError as e:
+                if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
+                    print("\n  [FATAL] 所有 MCP Token 积分已耗尽！请充值后重新运行（--resume）继续。")
+                    tts_thread.join(timeout=5)
+                    sys.exit(1)
+                raise
 
         if image_failed:
             missing = [fn for fn, _ in image_prompts if fn not in image_urls]
@@ -1068,4 +1075,16 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RuntimeError as e:
+        if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
+            print("\n" + "=" * 60)
+            print("FATAL: 所有 MCP Token 积分已耗尽！")
+            print("请充值积分后重新运行（加 --resume 参数）继续上次未完成的视频。")
+            print("=" * 60)
+            sys.exit(1)
+        raise
+    except KeyboardInterrupt:
+        print("\n\n用户中断。下次运行加 --resume 可继续。")
+        sys.exit(0)
