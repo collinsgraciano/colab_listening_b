@@ -761,11 +761,16 @@ def main():
     print("Step 4: Building timeline + SRT...")
     srt_path = sub_dir / "output.srt"
     meta_path = sub_dir / "meta.json"
+    tts = TTSEngine()
     if _step_done(checkpoint, "step4_timeline") and srt_path.exists() and meta_path.exists():
         print("  [Resume] Loading existing timeline + SRT...")
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         timeline = meta["timeline"]
         srt = srt_path.read_text(encoding="utf-8")
+        # Load vars from meta for downstream steps
+        narration = meta.get("narration", {})
+        normal_paths = meta.get("normal_paths", [])
+        zh_paths = meta.get("zh_paths", [])
     else:
         tts = TTSEngine()
     if is_enhanced:
