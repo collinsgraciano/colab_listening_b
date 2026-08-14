@@ -95,6 +95,7 @@ def mcp_call(method, params=None):
         body = e.read().decode("utf-8", errors="replace")
         # Check for credit errors and rotate token
         if _is_credit_error(body) and len(_TOKENS) > 1:
+            print(f"  [MCP] 积分不足! HTTP {e.code} 响应: {body[:500]}")
             _rotate_token()
             return mcp_call(method, params)  # retry with new token
         print(f"HTTP {e.code}: {body[:500]}")
@@ -158,6 +159,7 @@ def call_tool(name, arguments):
             if item.get("type") == "text":
                 text = item.get("text", "")
                 if _is_credit_error(text) and len(_TOKENS) > 1:
+                    print(f"  [MCP] 积分不足! 工具响应: {text[:500]}")
                     _rotate_token()
                     return call_tool(name, arguments)  # retry with new token
     return result
