@@ -78,6 +78,7 @@ TECHNICAL REQUIREMENTS:
 - "thumbnail_icons": an array of 4-5 objects with "en" and "zh" string keys, describing scene-related keywords shown as circular icons at the bottom of the thumbnail. Each has an English label and a Traditional Chinese label. Example for pharmacy: [{{"en": "Prescription", "zh": "處方"}}, {{"en": "Refill", "zh": "補充"}}, {{"en": "Cough Syrup", "zh": "止咳糖漿"}}, {{"en": "Side Effects", "zh": "副作用"}}]
 - "thumbnail_prompt": a detailed prompt for generating a YouTube thumbnail background image. Must describe: a 3D Pixar-style character with an expressive face, the scene location, bright colors, reference-style layout.
 - "title": English title (e.g. "AT THE AIRPORT")
+- "cefr": the CEFR level of this lesson, exactly "{cefr}" (used for thumbnail level badge)
 - "title_zh": Traditional Chinese short title (max 6 characters, e.g. "在機場")
 - "scene_zh": Traditional Chinese scene description (e.g. "餐廳 · 點餐")
 - "story_hook": a compelling 1-sentence intro that sets the scene
@@ -105,6 +106,7 @@ TECHNICAL REQUIREMENTS:
 JSON schema:
 {{
   "title": string,
+  "cefr": string,
   "title_zh": string,
   "scene_zh": string,
   "lesson_type": "listening",
@@ -178,6 +180,7 @@ def generate_listening_script_enhanced(topic: str, cefr: str = "A2",
     script.setdefault("outro", "That's all for today. Keep practicing!")
     script.setdefault("outro_zh", "")
     script.setdefault("title", "")
+    script["cefr"] = script.get("cefr") or cefr  # used by thumbnail level badge
     script.setdefault("title_zh", script.get("intro_zh", ""))
     script.setdefault("practice_intro_en", "Now let's practice. Listen and repeat each sentence.")
     script.setdefault("practice_intro_zh", "現在來練習。請跟著朗讀每一句。")

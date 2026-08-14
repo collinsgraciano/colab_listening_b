@@ -1,0 +1,10 @@
+kokoro>=0.8.4
+soundfile
+torch
+edge-tts
+Pillow
+opencc-python-reimplemented
+cn2an
+pypinyin
+ordered_set
+jieba

@@ -40,10 +40,25 @@ def get_all_topics(topics: dict) -> list[str]:
     return all_topics
 
 
-def pick_random_topic(topics_file: str, used_file: str) -> str | None:
+def _mark_used(used_file: str, topic: str) -> None:
+    """Record a topic as used in used_topics.json (idempotent)."""
+    used = load_used_topics(used_file)
+    used[topic] = {"used_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    Path(used_file).parent.mkdir(parents=True, exist_ok=True)
+    Path(used_file).write_text(json.dumps(used, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def mark_topic_used(used_file: str, topic: str) -> None:
+    """Public API: mark a topic as used — call AFTER its script is safely saved,
+    so failed runs and resume runs don't burn through the topic pool."""
+    _mark_used(used_file, topic)
+
+
+def pick_random_topic(topics_file: str, used_file: str, mark: bool = True) -> str | None:
     """Pick a random topic that hasn't been used yet.
 
     If all topics are used, resets used_topics.json and picks from the full pool.
+    Set mark=False to defer marking (caller marks via mark_topic_used after success).
     Returns the topic string, or None if topics_file is empty/missing.
     """
     topics = load_topics(topics_file)
@@ -66,10 +81,8 @@ def pick_random_topic(topics_file: str, used_file: str) -> str | None:
     chosen = random.choice(available)
     print(f"  [Topic] Randomly selected: '{chosen}' (from {len(available)} available)")
 
-    # Record in used_topics.json
-    used[chosen] = {"used_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-    Path(used_file).parent.mkdir(parents=True, exist_ok=True)
-    Path(used_file).write_text(json.dumps(used, ensure_ascii=False, indent=2), encoding="utf-8")
+    if mark:
+        _mark_used(used_file, chosen)
 
     return chosen
 

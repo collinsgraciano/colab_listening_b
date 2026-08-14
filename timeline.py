@@ -17,8 +17,6 @@ def _format_srt_time(seconds: float) -> str:
 
 
 def build_listening_timeline(script: dict, dialogue_durations: list[float],
-                             cue_duration: float = 3.0,
-                             gap: float = 0.0,
                              practice_duration: float = 3.0,
                              pad: float = 0.4) -> list[dict]:
     """Build a timeline for the listening-practice lesson type.

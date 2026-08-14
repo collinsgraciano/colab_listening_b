@@ -7,3 +7,5 @@ used_topics.json
 *.mp3
 *.wav
 *.png
+.codely-cli/
+test_prompt_*.txt

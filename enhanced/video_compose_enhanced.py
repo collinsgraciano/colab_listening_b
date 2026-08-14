@@ -236,8 +236,12 @@ def compose_listening_enhanced(
                 quiz.get("question", ""), quiz.get("options", []),
                 quiz.get("answer", ""), scene_img, p,
                 is_answer=True, idx=qi, total=len(questions))
-        # Shadowing frames (same as original)
+        # Shadowing frames: EN-only (listen_en/practice) + EN+ZH (listen_zh)
         for i, line in enumerate(dialogue):
+            p_en = str(static_dir / f"en_{i}.png")
+            _render_static_frame(
+                line.get("text", ""), line.get("phonetic", ""),
+                "", scene_img, p_en, i, n)
             p = str(static_dir / f"zh_{i}.png")
             _render_static_frame(
                 line.get("text", ""), line.get("phonetic", ""),
@@ -291,9 +295,13 @@ def compose_listening_enhanced(
                            "-c:v", "libx264", "-pix_fmt", "yuv420p",
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                            out_path]
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-                    print(f"  FFmpeg error group seg {gi}: {r.stderr[-200:]}")
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                except subprocess.TimeoutExpired:
+                    print(f"  FFmpeg TIMEOUT (600s) on group seg {gi}, using fallback")
+                    r = None
+                if r is None or r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+                    print(f"  FFmpeg error group seg {gi}: {r.stderr[-200:] if r else 'timeout'}")
                     fb_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                               "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                               "-t", f"{group_dur:.3f}", "-vf", "fps=24",
@@ -301,7 +309,11 @@ def compose_listening_enhanced(
                               "-c:v", "libx264", "-pix_fmt", "yuv420p",
                               "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                               out_path]
-                    r2 = subprocess.run(fb_cmd, capture_output=True, text=True, timeout=60)
+                    try:
+                        r2 = subprocess.run(fb_cmd, capture_output=True, text=True, timeout=300)
+                    except subprocess.TimeoutExpired:
+                        print(f"  Fallback timed out for group seg {gi}")
+                        continue
                     if r2.returncode != 0:
                         continue
                 segments.append(out_path)
@@ -343,7 +355,6 @@ def compose_listening_enhanced(
                         inputs.extend(["-i", la])
                     filter_parts = []
                     for j in range(len(slow_lines_audio)):
-                        line_idx = group_lines[j]
                         # Use slow_durations for padding
                         from pipeline import _get_audio_duration as _gad
                         slow_dur = _gad(slow_lines_audio[j]) if j < len(slow_lines_audio) else 4.0
@@ -357,7 +368,7 @@ def compose_listening_enhanced(
                          "-map", "[a]",
                          "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                          slow_group_path],
-                        capture_output=True, timeout=60)
+                        capture_output=True, timeout=120)
 
                 if not os.path.exists(slow_group_path) or os.path.getsize(slow_group_path) < 1000:
                     skipped_segs += 1
@@ -387,11 +398,15 @@ def compose_listening_enhanced(
                            "-c:v", "libx264", "-pix_fmt", "yuv420p",
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                            out_path]
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                if r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                except subprocess.TimeoutExpired:
+                    print(f"  FFmpeg TIMEOUT (600s) on slow group {gi}")
+                    r = None
+                if r is not None and r.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
                     segments.append(out_path)
                 else:
-                    print(f"  FFmpeg error slow group {gi}: {r.stderr[-200:]}")
+                    print(f"  FFmpeg error slow group {gi}: {r.stderr[-200:] if r else 'timeout'}")
                 eff_total = total_segs - skipped_segs
                 _cb(int(seg_idx / max(eff_total, 1) * 80), f"  Segment {seg_idx}/{eff_total} (slow group {gi})")
                 continue
@@ -448,7 +463,14 @@ def compose_listening_enhanced(
                 video_src = scene_img
             is_static = True
         elif seg_type in ("listen_en", "listen_zh", "practice"):
-            video_src = str(static_dir / f"zh_{d_idx}.png") if d_idx >= 0 else scene_img
+            # listen_en / practice: EN-only frame; listen_zh: EN+ZH frame
+            if seg_type == "listen_zh":
+                frame_name = f"zh_{d_idx}.png" if d_idx >= 0 else ""
+            else:
+                frame_name = f"en_{d_idx}.png" if d_idx >= 0 else ""
+            video_src = str(static_dir / frame_name) if frame_name else scene_img
+            if not os.path.exists(video_src):
+                video_src = str(static_dir / f"zh_{d_idx}.png") if d_idx >= 0 else scene_img
             if not os.path.exists(video_src):
                 video_src = scene_img
             is_static = True
@@ -589,9 +611,13 @@ def compose_listening_enhanced(
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        out_path]
 
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-            print(f"  FFmpeg error seg {seg_idx}: {r.stderr[-200:]}")
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            print(f"  FFmpeg TIMEOUT (300s) on seg {seg_idx} ({seg_type}), using fallback")
+            r = None
+        if r is None or r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+            print(f"  FFmpeg error seg {seg_idx}: {r.stderr[-200:] if r else 'timeout'}")
             fb_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                       "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                       "-t", f"{duration:.3f}", "-vf", "fps=24",
@@ -599,7 +625,11 @@ def compose_listening_enhanced(
                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                       out_path]
-            r2 = subprocess.run(fb_cmd, capture_output=True, text=True, timeout=60)
+            try:
+                r2 = subprocess.run(fb_cmd, capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired:
+                print(f"  Fallback timed out, skipping segment {seg_idx}")
+                continue
             if r2.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
                 print(f"  Fallback also failed, skipping: {r2.stderr[-200:]}")
                 continue
@@ -725,7 +755,12 @@ def compose_listening_enhanced(
             "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
             final_path,
         ]
-        subprocess.run(cmd, check=True, capture_output=True, cwd=str(srt_dir))
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, cwd=str(srt_dir), timeout=1800)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Subtitle overlay burn timed out after 1800s (too many subtitle PNGs?)")
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Subtitle overlay burn failed: {e.stderr.decode(errors='replace')[-500:] if e.stderr else e}")
     else:
         shutil.copy2(no_sub, final_path)
 

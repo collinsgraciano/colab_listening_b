@@ -22,7 +22,9 @@ if _IS_WINDOWS:
 else:
     FONT_EN = "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"
     FONT_ZH = "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"
-    FONT_PH = "/usr/share/fonts/truetype/cambria/cambria.ttc"
+    # DejaVu has complete IPA glyph coverage — Noto CJK renders many IPA
+    # characters (ɪ ə ʃ ʒ ɡ...) as tofu boxes
+    FONT_PH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
     import os as _os
     if not _os.path.exists(FONT_EN):
         FONT_EN = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -388,6 +390,13 @@ def compose_listening(
     if os.path.exists(scene_img):
         _cb(5, f"Rendering {n} static frames...")
         for i, line in enumerate(dialogue):
+            # EN-only frame (listen_en): English + phonetic, NO Chinese yet —
+            # the translation must stay hidden until the listen_zh segment
+            p_en = str(static_dir / f"en_{i}.png")
+            _render_static_frame(
+                line.get("text", ""), line.get("phonetic", ""),
+                "", scene_img, p_en, i, n)
+            # EN+ZH frame (listen_zh): reveals the Traditional Chinese translation
             p = str(static_dir / f"zh_{i}.png")
             _render_static_frame(
                 line.get("text", ""), line.get("phonetic", ""),
@@ -449,9 +458,13 @@ def compose_listening(
                            "-c:v", "libx264", "-pix_fmt", "yuv420p",
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                            out_path]
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-                if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-                    print(f"  FFmpeg error group seg {gi}: {r.stderr[-200:]}")
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                except subprocess.TimeoutExpired:
+                    print(f"  FFmpeg TIMEOUT (600s) on group seg {gi}, using fallback")
+                    r = None
+                if r is None or r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+                    print(f"  FFmpeg error group seg {gi}: {r.stderr[-200:] if r else 'timeout'}")
                     # Fallback: silent segment with scene image to maintain timeline
                     fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                                    "-f", "lavfi", "-i", "anullsrc=stereo:44100",
@@ -460,7 +473,11 @@ def compose_listening(
                                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
                                    "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                                    out_path]
-                    r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=60)
+                    try:
+                        r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+                    except subprocess.TimeoutExpired:
+                        print(f"  Fallback also timed out for group seg {gi}")
+                        continue
                     if r2.returncode != 0:
                         print(f"  Fallback also failed: {r2.stderr[-200:]}")
                         continue
@@ -499,7 +516,16 @@ def compose_listening(
 
         # Determine video source
         if seg_type in ("listen_en", "listen_zh", "practice"):
-            video_src = str(static_dir / f"zh_{d_idx}.png") if d_idx >= 0 else scene_img
+            # listen_en / practice (silence after EN reads): EN-only frame.
+            # listen_zh: EN+ZH frame (translation revealed).
+            # Backward compat: fall back to zh_{i}.png if en_{i}.png missing.
+            if seg_type == "listen_zh":
+                frame_name = f"zh_{d_idx}.png" if d_idx >= 0 else ""
+            else:
+                frame_name = f"en_{d_idx}.png" if d_idx >= 0 else ""
+            video_src = str(static_dir / frame_name) if frame_name else scene_img
+            if not os.path.exists(video_src):
+                video_src = str(static_dir / f"zh_{d_idx}.png") if d_idx >= 0 else scene_img
             if not os.path.exists(video_src):
                 video_src = scene_img
             is_static = True
@@ -654,9 +680,13 @@ def compose_listening(
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        out_path]
 
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        if r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-            print(f"  FFmpeg error seg {seg_idx}: {r.stderr[-200:]}")
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            print(f"  FFmpeg TIMEOUT (300s) on seg {seg_idx} ({seg_type}), using fallback")
+            r = None
+        if r is None or r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+            print(f"  FFmpeg error seg {seg_idx}: {r.stderr[-200:] if r else 'timeout'}")
             # Fallback: silent segment with scene image
             fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                            "-f", "lavfi", "-i", "anullsrc=stereo:44100",
@@ -665,7 +695,11 @@ def compose_listening(
                            "-c:v", "libx264", "-pix_fmt", "yuv420p",
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                            out_path]
-            r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=60)
+            try:
+                r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired:
+                print(f"  Fallback also timed out, skipping segment {seg_idx}")
+                continue
             if r2.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
                 print(f"  Fallback also failed, skipping segment: {r2.stderr[-200:]}")
                 continue
@@ -796,7 +830,12 @@ def compose_listening(
             "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
             final_path,
         ]
-        subprocess.run(cmd, check=True, capture_output=True, cwd=str(srt_dir))
+        try:
+            subprocess.run(cmd, check=True, capture_output=True, cwd=str(srt_dir), timeout=1800)
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Subtitle overlay burn timed out after 1800s (too many subtitle PNGs?)")
+        except subprocess.CalledProcessError as e:
+            raise RuntimeError(f"Subtitle overlay burn failed: {e.stderr.decode(errors='replace')[-500:] if e.stderr else e}")
     else:
         shutil.copy2(no_sub, final_path)
 

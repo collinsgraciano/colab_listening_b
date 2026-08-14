@@ -18,7 +18,10 @@ import re
 import urllib.request
 import urllib.error
 
-sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+except Exception:
+    pass  # stdout may be redirected/captured (pytest) — reconfigure unavailable
 
 MCP_URL = "https://ai-generator.tuanjie.cn/mcp"
 
@@ -101,7 +104,9 @@ def mcp_call(method, params=None):
             _session_id = sid
         body = e.read().decode("utf-8", errors="replace")
         # Check for credit errors and rotate token
-        if _is_credit_error(body) and len(_TOKENS) > 1:
+        # (_rotate_token raises ALL_MCP_TOKENS_EXHAUSTED when no tokens left —
+        #  even for single-token setups, so credits errors never pass silently)
+        if _is_credit_error(body):
             print(f"  [MCP] 积分不足! HTTP {e.code} 响应: {body[:500]}")
             _rotate_token()
             return mcp_call(method, params)  # retry with new token
@@ -165,9 +170,9 @@ def call_tool(name, arguments):
         for item in content:
             if item.get("type") == "text":
                 text = item.get("text", "")
-                if _is_credit_error(text) and len(_TOKENS) > 1:
+                if _is_credit_error(text):
                     print(f"  [MCP] 积分不足! 工具响应: {text[:500]}")
-                    _rotate_token()
+                    _rotate_token()  # raises ALL_MCP_TOKENS_EXHAUSTED if no tokens left
                     return call_tool(name, arguments)  # retry with new token
     return result
 

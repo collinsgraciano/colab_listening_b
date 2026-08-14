@@ -32,7 +32,7 @@ from tts_engine import TTSEngine, build_voice_map, get_zh_voice
 from timeline import build_listening_timeline, build_srt_from_timeline
 from video_compose import compose_listening
 from grouping_b import build_dialogue_groups, merge_group_prompt
-from topic_manager import pick_random_topic
+from topic_manager import pick_random_topic, mark_topic_used
 
 
 def _save_checkpoint(work_dir: Path, step: str, **extra):
@@ -47,44 +47,45 @@ def _save_checkpoint(work_dir: Path, step: str, **extra):
     if step not in cp.get("completed_steps", []):
         cp.setdefault("completed_steps", []).append(step)
     cp.update(extra)
+    cp["_run_dir"] = str(work_dir)  # resume uses this to relocate the run directory
     cp["timestamp"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     cp_path.write_text(json.dumps(cp, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  [Checkpoint] Saved: {step}")
 
 
 def _load_checkpoint(work_dir: Path) -> dict:
-    """Load checkpoint from work_dir, or scan subdirectories for incomplete runs."""
-    # First check work_dir/checkpoint.json directly (backward compat)
-    cp_path = work_dir / "checkpoint.json"
-    if cp_path.exists():
+    """Load checkpoint from work_dir, or scan subdirectories for incomplete runs.
+
+    A run is considered complete when step6_4k is done (so a crash during 4K
+    upscale can still be resumed). Among multiple incomplete runs, the most
+    recently updated one wins.
+    """
+    candidates = []
+
+    def _check(cp_path: Path):
         try:
             cp = json.loads(cp_path.read_text(encoding="utf-8"))
-            if "step5_compose" not in cp.get("completed_steps", []):
-                return cp
+            if "step6_4k" not in cp.get("completed_steps", []):
+                candidates.append((cp_path.stat().st_mtime, cp_path.parent, cp))
             else:
-                # Completed run — delete checkpoint so next run starts fresh
+                # Completed — delete checkpoint so future scans skip it
                 cp_path.unlink()
-                print(f"  [Resume] Previous run complete, starting fresh.")
-                return {}
         except Exception:
             pass
+
+    # First check work_dir/checkpoint.json directly (backward compat)
+    _check(work_dir / "checkpoint.json")
     # Scan subdirectories for incomplete checkpoints
-    for sub in work_dir.iterdir():
-        if not sub.is_dir():
-            continue
-        sub_cp = sub / "checkpoint.json"
-        if not sub_cp.exists():
-            continue
-        try:
-            cp = json.loads(sub_cp.read_text(encoding="utf-8"))
-            if "step5_compose" not in cp.get("completed_steps", []):
-                print(f"  [Resume] Found incomplete run in: {sub.name}")
-                return cp
-            else:
-                # Completed — delete checkpoint
-                sub_cp.unlink()
-        except Exception:
-            continue
+    if not candidates and work_dir.exists():
+        for sub in work_dir.iterdir():
+            if sub.is_dir():
+                _check(sub / "checkpoint.json")
+
+    if candidates:
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        _, run_dir, cp = candidates[0]
+        print(f"  [Resume] Found incomplete run in: {run_dir.name}")
+        return cp
     return {}
 
 
@@ -153,9 +154,16 @@ def _get_audio_duration(path: str) -> float:
         return 0.0
 
 
-def _generate_video_clips(video_tasks, clips_dir, clip_paths):
+def _file_ok(path: str, min_size: int) -> bool:
+    """Check a file exists and is larger than min_size (guards partial downloads)."""
+    return bool(path) and os.path.exists(path) and os.path.getsize(path) > min_size
+
+
+def _generate_video_clips(video_tasks, clips_dir, clip_paths, offset=0):
     """Generate video clips in batches. Runs in a thread.
     Each task has its own 'duration' (dynamic per-group, not fixed).
+    clip_paths[offset + i] corresponds to video_tasks[i]; entries already set
+    (per-clip resume) are skipped so no credits are re-spent.
     """
     batch_size = 12
 
@@ -164,7 +172,9 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths):
         task_ids = []
 
         for j, task in enumerate(batch):
-            idx = batch_start + j
+            idx = offset + batch_start + j
+            if clip_paths[idx] is not None:
+                continue  # already downloaded (per-clip resume)
             print(f"  [Video] Creating task {idx+1}/{len(video_tasks)}: {task['filename']}...")
             try:
                 result = call_tool("generate_video", {
@@ -198,16 +208,15 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths):
             url = data.get("url", "")
             if url:
                 dest = str(clips_dir / filename)
-                if download_file(url, dest) and os.path.getsize(dest) > 500000:
+                if download_file(url, dest) and _file_ok(dest, 500000):
                     clip_paths[idx] = dest
                     print(f"    [Video] Downloaded: {filename} ({os.path.getsize(dest)//1024}KB)")
                 else:
-                    print(f"    [Video] WARNING: File too small, re-downloading...")
-                    download_file(url, dest)
-                    if os.path.getsize(dest) > 500000:
+                    print(f"    [Video] WARNING: File too small or download failed, re-downloading...")
+                    if download_file(url, dest) and _file_ok(dest, 500000):
                         clip_paths[idx] = dest
                     else:
-                        print(f"    [Video] ERROR: Downloaded file still too small")
+                        print(f"    [Video] ERROR: Downloaded file still too small/missing")
             else:
                 print(f"    [Video] ERROR: No video URL. Status={data.get('status')}")
                 raw_json = data.get("raw_json", "")
@@ -222,9 +231,9 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths):
 
     # Retry failed clips one by one — each retry creates a BRAND NEW video task
     MAX_RETRY = 5
-    failed = [i for i, p in enumerate(clip_paths) if p is None]
+    failed = [offset + i for i in range(len(video_tasks)) if clip_paths[offset + i] is None]
     for idx in failed:
-        task = video_tasks[idx]
+        task = video_tasks[idx - offset]
         attempt = 0
         while attempt < MAX_RETRY:
             attempt += 1
@@ -282,12 +291,12 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths):
                     continue  # ← creates another NEW task
                 # 4. Download the result
                 dest = str(clips_dir / task["filename"])
-                if download_file(url, dest) and os.path.getsize(dest) > 500000:
+                if download_file(url, dest) and _file_ok(dest, 500000):
                     clip_paths[idx] = dest
                     print(f"    [Video] Retry successful: {task['filename']}")
                     break
                 else:
-                    print(f"    [Video] FAILED: file too small ({os.path.getsize(dest)} bytes), creating new task...")
+                    print(f"    [Video] FAILED: file too small or missing, creating new task...")
                     time.sleep(10)
                     continue
             except Exception as e:
@@ -298,8 +307,8 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths):
         if clip_paths[idx] is None:
             print(f"    [Video] GIVING UP on clip {idx+1} after {MAX_RETRY} retries: {task['filename']}")
 
-    total = sum(1 for p in clip_paths if p is not None)
-    print(f"  [Video] Total clips downloaded: {total}/{len(video_tasks)}")
+    total = sum(1 for p in clip_paths[offset:offset + len(video_tasks)] if p is not None)
+    print(f"  [Video] Clips for this batch: {total}/{len(video_tasks)}")
 
 
 def _generate_tts(script, dialogue, audio_dir, results, enhanced=False):
@@ -422,7 +431,7 @@ def main():
     parser.add_argument("--pad", type=float, default=0.4, help="Audio pad between segments")
     parser.add_argument("--lessons-dir", default=None, help="Lessons dir for anti-duplicate check")
     parser.add_argument("--topics-file", default=str(Path(__file__).parent / "topics.json"), help="Path to topics.json")
-    parser.add_argument("--used-topics-file", default=str(Path(__file__).parent / "used_topics.json"), help="Path to used_topics.json")
+    parser.add_argument("--used-topics-file", default=None, help="Path to used_topics.json (default: <output>/used_topics.json — persists on Drive across Colab sessions)")
     parser.add_argument("--num-lines", type=int, default=18, help="Number of dialogue lines (default 18)")
     parser.add_argument("--mcp-tokens", default=None, help="TJGenerators MCP OAuth tokens, comma-separated for multi-token rotation")
     parser.add_argument("--mcp-token", default=None, help="(Deprecated) Single MCP token. Use --mcp-tokens instead.")
@@ -430,6 +439,8 @@ def main():
     parser.add_argument("--structure", default="original", choices=["original", "enhanced"],
                         help="Video structure: 'original' (4-chapter) or 'enhanced' (7-chapter with vocab+quiz+slow)")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
+    parser.add_argument("--no-4k", dest="no_4k", action="store_true", help="Skip the final 4K upscaling step")
+    parser.add_argument("--upscale-timeout", type=int, default=3600, help="Timeout in seconds for 4K upscale (default 3600)")
     args = parser.parse_args()
 
     # Set API key from arg if provided
@@ -439,51 +450,59 @@ def main():
         print("ERROR: SENSENOVA_API_KEY not set. Pass --api-key or set env var.")
         sys.exit(1)
 
-    # Resolve topic: use --topic if given, otherwise pick randomly from topics.json
-    if args.topic:
-        topic = args.topic
-        print(f"  [Topic] Using specified topic: '{topic}'")
-    else:
-        print("  [Topic] No topic specified, picking randomly from topics.json...")
-        topic = pick_random_topic(args.topics_file, args.used_topics_file)
-        if not topic:
-            print("  [Topic] ERROR: No topics found. Please specify --topic or provide topics.json.")
-            sys.exit(1)
-    args.topic = topic
-
     parent_dir = Path(args.output).resolve()
     parent_dir.mkdir(parents=True, exist_ok=True)
+
+    # used_topics.json defaults to the OUTPUT dir (persists on Drive across
+    # Colab sessions; the repo dir is wiped on every re-clone)
+    used_topics_file = args.used_topics_file or str(parent_dir / "used_topics.json")
 
     # Resume: scan for incomplete checkpoint in parent dir or subdirectories
     if args.resume:
         checkpoint = _load_checkpoint(parent_dir)
         if checkpoint:
             print(f"  [Resume] Found checkpoint: {checkpoint.get('completed_steps', [])}")
-            if checkpoint.get("topic"):
-                args.topic = checkpoint["topic"]
-                topic = args.topic
         else:
             print(f"  [Resume] No incomplete checkpoint, starting fresh.")
             checkpoint = {}
     else:
         checkpoint = {}
 
+    # Resolve topic (priority): checkpoint topic > --topic > random pick.
+    # A randomly-picked topic is only marked "used" AFTER the script is saved,
+    # so failed runs and repeated --resume runs don't burn the topic pool.
+    if checkpoint.get("topic"):
+        topic = checkpoint["topic"]
+        print(f"  [Topic] Resuming topic from checkpoint: '{topic}'")
+    elif args.topic:
+        topic = args.topic
+        print(f"  [Topic] Using specified topic: '{topic}'")
+    else:
+        print("  [Topic] No topic specified, picking randomly from topics.json...")
+        topic = pick_random_topic(args.topics_file, used_topics_file, mark=False)
+        if not topic:
+            print("  [Topic] ERROR: No topics found. Please specify --topic or provide topics.json.")
+            sys.exit(1)
+    args.topic = topic
+
     # ===== Step 0: Generate script (with validation + retry) =====
     print("=" * 60)
     print("Step 0: Generating script via LLM (SenseNova DeepSeek V4 Flash)...")
 
     # Determine run directory:
-    # - On resume: use the directory where checkpoint.json was found
+    # - On resume: use the directory recorded in the checkpoint (or newest subfolder)
     # - On fresh start: create a subfolder named by YouTube title AFTER script generation
-    if checkpoint and checkpoint.get("_run_dir"):
+    if checkpoint and checkpoint.get("_run_dir") and Path(checkpoint["_run_dir"]).exists():
         work_dir = Path(checkpoint["_run_dir"])
-    elif checkpoint and checkpoint.get("topic"):
-        # Fallback: try to find checkpoint in subdirectories
-        work_dir = parent_dir  # temporary, will be overridden
-        for sub in parent_dir.iterdir():
-            if sub.is_dir() and (sub / "checkpoint.json").exists():
-                work_dir = sub
-                break
+    elif checkpoint:
+        # Fallback: newest subfolder containing a checkpoint.json (by mtime)
+        cands = [(p.stat().st_mtime, p) for p in parent_dir.iterdir()
+                 if p.is_dir() and (p / "checkpoint.json").exists()]
+        if cands:
+            cands.sort(reverse=True)
+            work_dir = cands[0][1]
+        else:
+            work_dir = parent_dir
     else:
         work_dir = parent_dir  # temporary, script goes here first
 
@@ -498,6 +517,7 @@ def main():
     if _step_done(checkpoint, "step0_script") and script_path.exists():
         print("  [Resume] Loading existing script...")
         script = json.loads(script_path.read_text(encoding="utf-8"))
+        mark_topic_used(used_topics_file, topic)  # idempotent re-mark on resume
     else:
         script = _generate_script_with_retry(args.topic, args.cefr, args.lessons_dir,
                                              args.num_lines, enhanced=(args.structure == "enhanced"))
@@ -520,6 +540,8 @@ def main():
             d.mkdir(parents=True, exist_ok=True)
         script_path.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
         _save_checkpoint(work_dir, "step0_script", topic=topic, cefr=args.cefr, structure=args.structure)
+        # Only burn the topic once its script is safely saved to disk
+        mark_topic_used(used_topics_file, topic)
     print(f"  Script saved: {script_path}")
     print(f"  Title: {script.get('title', '')}")
     print(f"  Dialogue lines: {len(script.get('dialogue', []))}")
@@ -544,14 +566,17 @@ def main():
     dialogue = script.get("dialogue", [])
     n = len(dialogue)
     is_enhanced = (args.structure == "enhanced")
+    tts_thread = None  # set when a fresh TTS run is started (non-resume path)
 
     char_a_desc = script.get("char_a_description", "friendly young man")
     char_b_desc = script.get("char_b_description", "friendly young woman")
-    scene = args.topic
+    # Prefer the LLM-generated scene name (e.g. "pharmacy") — more precise than
+    # the raw topic string, and works for outdoor scenes too
+    scene = script.get("scene") or args.topic
 
     image_prompts = [
         (f"Character design sheet, {char_a_desc} on the left, {char_b_desc} on the right, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_scene.png"),
-        (f"Scene background, {scene} interior, wide shot, showing all key elements of the scene, 3D cartoon style, no characters, no text, 16:9", "scene.png"),
+        (f"Scene background, {scene}, wide shot, showing all key elements of the scene, 3D cartoon style, no characters, no text, 16:9", "scene.png"),
     ]
 
     # Check if Step 2 already completed (images + audio exist)
@@ -611,11 +636,16 @@ def main():
     else:
         # Start TTS thread immediately (only depends on script, not images)
         tts_results = {}
-        tts_thread = threading.Thread(
-            target=_generate_tts,
-            args=(script, dialogue, audio_dir, tts_results, is_enhanced),
-            daemon=True,
-        )
+
+        def _tts_worker():
+            try:
+                _generate_tts(script, dialogue, audio_dir, tts_results, is_enhanced)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                tts_results["fatal_error"] = f"{type(e).__name__}: {e}"
+
+        tts_thread = threading.Thread(target=_tts_worker, daemon=True)
         tts_thread.start()
         print("  [TTS] Started TTS generation in background thread.")
 
@@ -658,30 +688,62 @@ def main():
 
         print("  [Image] All images done. Waiting for TTS...")
 
+    # clip_0 (scene establishing pan) doesn't depend on TTS — launch it now so
+    # it generates in parallel while the TTS thread finishes
+    scene_url = image_urls.get("scene.png", "")
+    char_scene_url = image_urls.get("char_scene.png", "")
+    scene_clip_task = {
+        "image_urls": scene_url,
+        "prompt": f"{scene}, slow camera pan, establishing shot, no characters, 3D cartoon style. The video MUST closely reference the uploaded reference image. CRITICAL: do NOT show any characters in this establishing shot.",
+        "filename": "clip_0.mp4",
+        "duration": 5,  # scene pan: 5s fixed
+        "generate_audio": True,  # clip_0 generates ambient sound
+    }
+    clips_dir.mkdir(parents=True, exist_ok=True)
+    clip_paths = [str(clips_dir / "clip_0.mp4")
+                  if _file_ok(str(clips_dir / "clip_0.mp4"), 500000) else None]
+    scene_clip_thread = None
+    if clip_paths[0] is None:
+        scene_clip_thread = threading.Thread(
+            target=_generate_video_clips,
+            args=([scene_clip_task], clips_dir, clip_paths),
+            daemon=True,
+        )
+        scene_clip_thread.start()
+        print("  [Video] Scene clip (clip_0) generation started in parallel with TTS.")
+    else:
+        print("  [Resume] clip_0 already exists, reusing.")
+
     # Wait for TTS if it was started (not in resume mode)
-    if 'tts_thread' in dir() or 'tts_thread' in locals():
-        try:
-            if tts_thread.is_alive():
-                tts_thread.join()
-        except NameError:
-            pass
+    if tts_thread is not None:
+        tts_thread.join()
+
+    # Validate TTS results BEFORE saving the step2 checkpoint — otherwise a
+    # silently-failed TTS run gets persisted and grouping uses wrong durations
+    _tts_err = tts_results.get("fatal_error")
+    if _tts_err:
+        print("  [TTS] FATAL: TTS generation thread crashed:")
+        print(f"    {_tts_err}")
+        raise RuntimeError(f"TTS generation failed: {_tts_err}. Fix the issue and re-run with --resume.")
+    _got_en = len(tts_results.get("normal_paths", []))
+    if _got_en < n:
+        raise RuntimeError(
+            f"TTS incomplete: got {_got_en}/{n} English dialogue audio files. "
+            f"Re-run with --resume to continue.")
 
     # Save Step 2 checkpoint
     _save_checkpoint(work_dir, "step2_images_tts")
 
-    # ===== Step 3: Generate video clips (images ready, TTS may still be running) =====
+    # ===== Step 3: Generate video clips =====
     print("\n" + "=" * 60)
-    print(f"Step 3: Generating video clips (Seedance2, {args.clip_duration}s each, generate_audio=True)...")
+    print(f"Step 3: Generating video clips (Seedance2, up to {args.clip_duration}s per group)...")
 
-    scene_url = image_urls.get("scene.png", "")
-    char_scene_url = image_urls.get("char_scene.png", "")
+    # Scene clip thread was launched in Step 2 — join it if still running
+    # (it usually finishes while TTS is still going)
+    if scene_clip_thread is not None:
+        scene_clip_thread.join()
 
-    # 方案 B: group consecutive lines regardless of speaker (need TTS durations first)
-    if 'tts_thread' in locals() and tts_thread.is_alive():
-        print("  [Group] Waiting for TTS to finish so we can group by audio durations...")
-        tts_thread.join()
-    print("  >> TTS audio done (needed for grouping).")
-
+    # 方案 B: group consecutive lines regardless of speaker (TTS durations ready)
     dialogue_durations = tts_results.get("dialogue_durations", [])
     groups = build_dialogue_groups(dialogue, dialogue_durations, args.clip_duration)
     n_groups = len(groups)
@@ -689,52 +751,47 @@ def main():
     for gi, g in enumerate(groups):
         print(f"    Group {gi}: lines={g['lines']} speakers={g['speakers']} total_audio={g['total_audio']:.1f}s")
 
-    # Build video generation tasks: 1 scene clip + N group clips
-    video_tasks = []
-    video_tasks.append({
-        "image_urls": scene_url,
-        "prompt": f"{scene} interior, slow camera pan, establishing shot, no characters, 3D cartoon style. The video MUST closely reference the uploaded reference image. CRITICAL: do NOT show any characters in this establishing shot.",
-        "filename": "clip_0.mp4",
-        "duration": 5,  # scene pan: 5s fixed
-        "generate_audio": True,  # clip_0 generates ambient sound
-    })
+    # Group clip tasks (clip_0 scene pan was already launched in Step 2)
+    group_tasks = []
     for gi, group in enumerate(groups):
         # Use combined character-scene image as reference (both characters in one image)
         combined_prompt = merge_group_prompt(group, dialogue)
-        video_prompt = f"{scene} interior. {combined_prompt} 3D cartoon style. The video MUST closely reference the uploaded reference image — the characters' appearance, clothing, and the scene must match the reference image exactly. CRITICAL: only ONE instance of each character should appear on screen — do NOT create duplicate characters or clones. Each character appears exactly once, no mirror images, no doubling."
+        video_prompt = f"{scene}. {combined_prompt} 3D cartoon style. The video MUST closely reference the uploaded reference image — the characters' appearance, clothing, and the scene must match the reference image exactly. CRITICAL: only ONE instance of each character should appear on screen — do NOT create duplicate characters or clones. Each character appears exactly once, no mirror images, no doubling."
         # Dynamic duration: match group's total TTS audio + pad between/after lines
         # Each line has pad seconds of silence after it, so total = sum(audio_dur) + n_lines * pad
         n_lines_in_group = len(group["lines"])
         group_total_with_pad = group["total_audio"] + n_lines_in_group * args.pad
         group_dur = round(group_total_with_pad)  # Seedance2 requires integer seconds
         group_dur = max(4, min(group_dur, 15))  # Seedance2 API: duration must be 4-15
-        video_tasks.append({
+        group_tasks.append({
             "image_urls": char_scene_url,
             "prompt": video_prompt,
             "filename": f"clip_{gi+1}.mp4",
             "duration": group_dur,
             "generate_audio": False,  # group clips: audio overlaid from TTS
         })
+    video_tasks = [scene_clip_task] + group_tasks
 
-    # Check if Step 3 already completed (all clips exist)
-    step3_done = _step_done(checkpoint, "step3_video")
-    all_clips_exist = all((clips_dir / f"clip_{i}.mp4").exists() and os.path.getsize(clips_dir / f"clip_{i}.mp4") > 500000
-                          for i in range(len(video_tasks)))
-    if step3_done and all_clips_exist:
-        print("  [Resume] Step 3 already done, loading existing clips...")
-        clip_paths = [str(clips_dir / f"clip_{i}.mp4") for i in range(len(video_tasks))]
+    # Per-clip resume: reuse any existing clip file (saves credits on partial runs)
+    for gi in range(len(group_tasks)):
+        p = str(clips_dir / f"clip_{gi+1}.mp4")
+        clip_paths.append(p if _file_ok(p, 500000) else None)
+    reused = sum(1 for p in clip_paths if p is not None)
+    if reused:
+        print(f"  [Resume] Reusing {reused}/{len(video_tasks)} existing clips.")
+
+    if all(p is not None for p in clip_paths):
+        print("  [Resume] Step 3 already done — all clips present.")
     else:
-        # Start video generation in a thread (TTS may still be running)
-        clip_paths = [None] * len(video_tasks)
+        # Generate the missing group clips (offset=1: clip_paths[0] is the scene clip)
         video_thread = threading.Thread(
             target=_generate_video_clips,
-            args=(video_tasks, clips_dir, clip_paths),
+            args=(group_tasks, clips_dir, clip_paths, 1),
             daemon=True,
         )
         video_thread.start()
 
-        # Wait for video to complete (TTS already joined above)
-        print("  Waiting for video clips to complete...")
+        print("  Waiting for group video clips to complete...")
         video_thread.join()
         print("  >> Video clips done.")
         _save_checkpoint(work_dir, "step3_video")
@@ -760,9 +817,12 @@ def main():
         # Build concat list with silence between lines
         # Use FFmpeg filter_complex to insert silence between audio files
         group_audio_path = str(audio_dir / f"group_audio_{gi}.mp3")
-        n_lines = len(group["lines"])
         lines_audio = [normal_paths[li] for li in group["lines"]
                        if li < len(normal_paths) and os.path.exists(normal_paths[li])]
+        # Track which original line indices survived (missing audio files are dropped)
+        kept_lines = [li for li in group["lines"]
+                      if li < len(normal_paths) and os.path.exists(normal_paths[li])]
+        n_lines = len(lines_audio)  # filter graph must match actual input count
         if not lines_audio:
             continue
 
@@ -780,7 +840,7 @@ def main():
                 inputs.extend(["-i", la])
             filter_parts = []
             for j in range(n_lines):
-                line_idx = group["lines"][j]
+                line_idx = kept_lines[j]
                 line_dur = dialogue_durations[line_idx] if line_idx < len(dialogue_durations) else 3.0
                 pad_dur = line_dur + args.pad
                 filter_parts.append(f"[{j}:a]apad=whole_dur={pad_dur:.3f}[a{j}]")
@@ -820,131 +880,129 @@ def main():
     print("Step 4: Building timeline + SRT...")
     srt_path = sub_dir / "output.srt"
     meta_path = sub_dir / "meta.json"
-    tts = TTSEngine()
+    timeline_resumed = False
     if _step_done(checkpoint, "step4_timeline") and srt_path.exists() and meta_path.exists():
         print("  [Resume] Loading existing timeline + SRT...")
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         timeline = meta["timeline"]
-        srt = srt_path.read_text(encoding="utf-8")
         # Load vars from meta for downstream steps
         narration = meta.get("narration", {})
         normal_paths = meta.get("normal_paths", [])
         zh_paths = meta.get("zh_paths", [])
-    else:
+        timeline_resumed = True
+    if not timeline_resumed:
         tts = TTSEngine()
-    if is_enhanced:
-        from enhanced.timeline_enhanced import build_enhanced_timeline, build_srt_from_timeline_enhanced
-        slow_paths = tts_results.get("slow_paths", [])
-        slow_durations = tts_results.get("slow_durations", [])
-        vocab_paths = tts_results.get("vocab_paths", [])
-        quiz_paths = tts_results.get("quiz_paths", [])
-        # Get vocab and quiz durations
-        vocab_durations = [tts.get_duration(p) if p and os.path.exists(p) else 4.0 for p in vocab_paths]
-        quiz_durations = [tts.get_duration(p) if p and os.path.exists(p) else 6.0 for p in quiz_paths]
+        if is_enhanced:
+            from enhanced.timeline_enhanced import build_enhanced_timeline, build_srt_from_timeline_enhanced
+            slow_paths = tts_results.get("slow_paths", [])
+            slow_durations = tts_results.get("slow_durations", [])
+            vocab_paths = tts_results.get("vocab_paths", [])
+            quiz_paths = tts_results.get("quiz_paths", [])
+            # Get vocab and quiz durations
+            vocab_durations = [tts.get_duration(p) if p and os.path.exists(p) else 4.0 for p in vocab_paths]
+            quiz_durations = [tts.get_duration(p) if p and os.path.exists(p) else 6.0 for p in quiz_paths]
 
-        timeline = build_enhanced_timeline(
-            script, dialogue_durations, slow_durations,
-            vocab_durations, quiz_durations,
-            pad=args.pad, practice_duration=args.practice_duration,
-        )
-        # Add audio_dur for enhanced segment types
-        for seg in timeline:
-            seg_type = seg.get("type", "")
-            audio_idx = seg.get("audio_index", 0)
-            if seg_type == "vocab":
-                ad = vocab_durations[audio_idx] if audio_idx < len(vocab_durations) else 4.0
-                seg["audio_dur"] = ad
-                seg["duration"] = ad + args.pad
-            elif seg_type == "quiz":
-                ad = quiz_durations[audio_idx] if audio_idx < len(quiz_durations) else 6.0
-                seg["audio_dur"] = ad
-                seg["duration"] = ad + args.pad
-            elif seg_type == "dialogue_slow":
-                ad = slow_durations[audio_idx] if audio_idx < len(slow_durations) else 4.0
-                seg["audio_dur"] = ad
-                seg["duration"] = ad + args.pad
-            elif seg_type in ("dialogue", "listen_en"):
-                ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
-                seg["audio_dur"] = ad
-                seg["duration"] = ad + args.pad
-            elif seg_type == "listen_zh":
-                if audio_idx < len(zh_paths) and zh_paths[audio_idx]:
-                    ad = tts.get_duration(zh_paths[audio_idx])
-                else:
+            timeline = build_enhanced_timeline(
+                script, dialogue_durations, slow_durations,
+                vocab_durations, quiz_durations,
+                pad=args.pad, practice_duration=args.practice_duration,
+            )
+            # Add audio_dur for enhanced segment types
+            for seg in timeline:
+                seg_type = seg.get("type", "")
+                audio_idx = seg.get("audio_index", 0)
+                if seg_type == "vocab":
+                    ad = vocab_durations[audio_idx] if audio_idx < len(vocab_durations) else 4.0
+                    seg["audio_dur"] = ad
+                    seg["duration"] = ad + args.pad
+                elif seg_type == "quiz":
+                    ad = quiz_durations[audio_idx] if audio_idx < len(quiz_durations) else 6.0
+                    seg["audio_dur"] = ad
+                    seg["duration"] = ad + args.pad
+                elif seg_type == "dialogue_slow":
+                    ad = slow_durations[audio_idx] if audio_idx < len(slow_durations) else 4.0
+                    seg["audio_dur"] = ad
+                    seg["duration"] = ad + args.pad
+                elif seg_type in ("dialogue", "listen_en"):
                     ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
-                seg["audio_dur"] = ad
-                seg["duration"] = ad + args.pad
-            elif seg_type == "practice":
-                seg["audio_dur"] = 0
-            elif seg_type == "title_card":
-                seg["audio_dur"] = seg["duration"]
-            elif seg_type == "practice_intro":
-                pi_path = narration.get("practice_intro", "")
-                ad = tts.get_duration(pi_path) if pi_path and os.path.exists(pi_path) else seg["duration"] - args.pad
-                seg["audio_dur"] = ad
-                seg["duration"] = ad + args.pad
-            elif seg_type == "outro":
-                out_path = narration.get("outro", "")
-                ad = tts.get_duration(out_path) if out_path and os.path.exists(out_path) else seg["duration"] - args.pad
-                seg["audio_dur"] = ad
-                seg["duration"] = ad + args.pad
+                    seg["audio_dur"] = ad
+                    seg["duration"] = ad + args.pad
+                elif seg_type == "listen_zh":
+                    if audio_idx < len(zh_paths) and zh_paths[audio_idx]:
+                        ad = tts.get_duration(zh_paths[audio_idx])
+                    else:
+                        ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
+                    seg["audio_dur"] = ad
+                    seg["duration"] = ad + args.pad
+                elif seg_type == "practice":
+                    seg["audio_dur"] = 0
+                elif seg_type == "title_card":
+                    seg["audio_dur"] = seg["duration"]
+                elif seg_type == "practice_intro":
+                    pi_path = narration.get("practice_intro", "")
+                    ad = tts.get_duration(pi_path) if pi_path and os.path.exists(pi_path) else seg["duration"] - args.pad
+                    seg["audio_dur"] = ad
+                    seg["duration"] = ad + args.pad
+                elif seg_type == "outro":
+                    out_path = narration.get("outro", "")
+                    ad = tts.get_duration(out_path) if out_path and os.path.exists(out_path) else seg["duration"] - args.pad
+                    seg["audio_dur"] = ad
+                    seg["duration"] = ad + args.pad
 
-        srt = build_srt_from_timeline_enhanced(timeline, gap=0.0)
-    else:
-        timeline = build_listening_timeline(
-            script, dialogue_durations,
-            pad=args.pad, practice_duration=args.practice_duration,
-        )
-        # Add audio_dur and adjust duration to include pad
-        for seg in timeline:
-            seg_type = seg.get("type", "")
-            audio_idx = seg.get("audio_index", 0)
-            if seg_type in ("dialogue", "listen_en"):
-                ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
-                seg["audio_dur"] = ad
-                seg["duration"] = ad + args.pad
-            elif seg_type == "listen_zh":
-                if audio_idx < len(zh_paths) and zh_paths[audio_idx]:
-                    ad = tts.get_duration(zh_paths[audio_idx])
-                else:
+            srt = build_srt_from_timeline_enhanced(timeline, gap=0.0)
+        else:
+            timeline = build_listening_timeline(
+                script, dialogue_durations,
+                pad=args.pad, practice_duration=args.practice_duration,
+            )
+            # Add audio_dur and adjust duration to include pad
+            for seg in timeline:
+                seg_type = seg.get("type", "")
+                audio_idx = seg.get("audio_index", 0)
+                if seg_type in ("dialogue", "listen_en"):
                     ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
-                seg["audio_dur"] = ad
-                seg["duration"] = ad + args.pad
-            elif seg_type == "practice":
-                seg["audio_dur"] = 0
-            elif seg_type == "title_card":
-                seg["audio_dur"] = seg["duration"]
-            elif seg_type == "practice_intro":
-                pi_path = narration.get("practice_intro", "")
-                ad = tts.get_duration(pi_path) if pi_path and os.path.exists(pi_path) else seg["duration"] - args.pad
-                seg["audio_dur"] = ad
-                seg["duration"] = ad + args.pad
-            elif seg_type == "outro":
-                out_path = narration.get("outro", "")
-                ad = tts.get_duration(out_path) if out_path and os.path.exists(out_path) else seg["duration"] - args.pad
-                seg["audio_dur"] = ad
-                seg["duration"] = ad + args.pad
-        srt = build_srt_from_timeline(timeline, gap=0.0)
-    srt_path = sub_dir / "output.srt"
-    srt_path.write_text(srt, encoding="utf-8")
-    print(f"  SRT saved: {srt_path}")
+                    seg["audio_dur"] = ad
+                    seg["duration"] = ad + args.pad
+                elif seg_type == "listen_zh":
+                    if audio_idx < len(zh_paths) and zh_paths[audio_idx]:
+                        ad = tts.get_duration(zh_paths[audio_idx])
+                    else:
+                        ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
+                    seg["audio_dur"] = ad
+                    seg["duration"] = ad + args.pad
+                elif seg_type == "practice":
+                    seg["audio_dur"] = 0
+                elif seg_type == "title_card":
+                    seg["audio_dur"] = seg["duration"]
+                elif seg_type == "practice_intro":
+                    pi_path = narration.get("practice_intro", "")
+                    ad = tts.get_duration(pi_path) if pi_path and os.path.exists(pi_path) else seg["duration"] - args.pad
+                    seg["audio_dur"] = ad
+                    seg["duration"] = ad + args.pad
+                elif seg_type == "outro":
+                    out_path = narration.get("outro", "")
+                    ad = tts.get_duration(out_path) if out_path and os.path.exists(out_path) else seg["duration"] - args.pad
+                    seg["audio_dur"] = ad
+                    seg["duration"] = ad + args.pad
+            srt = build_srt_from_timeline(timeline, gap=0.0)
+        srt_path.write_text(srt, encoding="utf-8")
+        print(f"  SRT saved: {srt_path}")
 
-    # Save meta.json
-    meta = {
-        "timeline": timeline,
-        "script": script,
-        "pad": args.pad,
-        "narration": narration,
-        "normal_paths": normal_paths,
-        "zh_paths": zh_paths,
-    }
-    if is_enhanced:
-        meta["slow_paths"] = tts_results.get("slow_paths", [])
-        meta["vocab_paths"] = tts_results.get("vocab_paths", [])
-        meta["quiz_paths"] = tts_results.get("quiz_paths", [])
-    meta_path = sub_dir / "meta.json"
-    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"  Meta saved: {meta_path}")
+        # Save meta.json
+        meta = {
+            "timeline": timeline,
+            "script": script,
+            "pad": args.pad,
+            "narration": narration,
+            "normal_paths": normal_paths,
+            "zh_paths": zh_paths,
+        }
+        if is_enhanced:
+            meta["slow_paths"] = tts_results.get("slow_paths", [])
+            meta["vocab_paths"] = tts_results.get("vocab_paths", [])
+            meta["quiz_paths"] = tts_results.get("quiz_paths", [])
+        meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        print(f"  Meta saved: {meta_path}")
     _save_checkpoint(work_dir, "step4_timeline")
 
     # ===== Step 4.5: Generate YouTube metadata + thumbnail =====
@@ -1040,21 +1098,34 @@ def main():
     print("\n" + "=" * 60)
     print("Step 6: Upscaling to 4K...")
     final_4k_path = vid_dir / f"{safe_vid_name}_4K.mp4"
-    if _step_done(checkpoint, "step6_4k") and final_4k_path.exists():
+    if args.no_4k:
+        print("  [4K] Skipped (--no-4k).")
+    elif _step_done(checkpoint, "step6_4k") and final_4k_path.exists():
         print("  [Resume] 4K video already exists, skipping...")
     else:
-        r = subprocess.run(
-            ["ffmpeg", "-i", final_path,
-             "-vf", "scale=3840:2160:flags=lanczos",
-             "-c:v", "libx264", "-crf", "18", "-preset", "slow",
-             "-c:a", "copy",
-             str(final_4k_path), "-y"],
-            capture_output=True, timeout=600)
-        if r.returncode == 0 and final_4k_path.exists():
+        # preset medium (not slow) — Colab CPUs can't finish preset slow for a
+        # 12-min 4K encode inside any reasonable timeout
+        try:
+            r = subprocess.run(
+                ["ffmpeg", "-i", final_path,
+                 "-vf", "scale=3840:2160:flags=lanczos",
+                 "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-threads", "0",
+                 "-c:a", "copy",
+                 str(final_4k_path), "-y"],
+                capture_output=True, timeout=args.upscale_timeout)
+        except subprocess.TimeoutExpired:
+            print(f"  [4K] Upscaling timed out — 720p version is still available.")
+            r = None
+            final_4k_path.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"  [4K] Upscaling error: {e}")
+            r = None
+            final_4k_path.unlink(missing_ok=True)
+        if r is not None and r.returncode == 0 and final_4k_path.exists():
             size_4k = os.path.getsize(final_4k_path) / (1024 * 1024)
             print(f"  4K video saved: {final_4k_path} ({size_4k:.1f}MB)")
             _save_checkpoint(work_dir, "step6_4k")
-        else:
+        elif r is not None:
             print(f"  [4K] Upscaling failed, 720p version is still available.")
             stderr = r.stderr.decode("utf-8", errors="replace")[-500:] if r.stderr else ""
             if stderr:
