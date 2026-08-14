@@ -48,8 +48,15 @@ def _next_id():
 
 
 def _is_credit_error(text: str) -> bool:
-    """Check if an error message indicates insufficient credits."""
-    return "积分" in text or "credit" in text.lower() or "余额" in text or "quota" in text.lower()
+    """Check if an error message indicates insufficient credits.
+    Only matches actual credit/quota error messages, not the word 'credit' in prompts.
+    """
+    # Must contain error keywords AND credit/quota keywords
+    is_error = any(k in text.lower() for k in ["error", "failed", "denied", "insufficient", "不足", "耗尽", "exhausted"])
+    has_credit = any(k in text.lower() for k in ["积分", "credit balance", "credits", "余额不足", "quota exceeded", "billing"])
+    # Also match explicit Chinese credit error patterns
+    explicit = any(k in text for k in ["积分不足", "积分已耗尽", "余额不足", "额度不足"])
+    return (is_error and has_credit) or explicit
 
 
 def _rotate_token():
