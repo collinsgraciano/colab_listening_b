@@ -53,15 +53,39 @@ def _save_checkpoint(work_dir: Path, step: str, **extra):
 
 
 def _load_checkpoint(work_dir: Path) -> dict:
-    """Load checkpoint regardless of topic/cefr/structure — just continue last unfinished run."""
+    """Load checkpoint from work_dir, or scan subdirectories for incomplete runs."""
+    # First check work_dir/checkpoint.json directly (backward compat)
     cp_path = work_dir / "checkpoint.json"
-    if not cp_path.exists():
-        return {}
-    try:
-        cp = json.loads(cp_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return cp
+    if cp_path.exists():
+        try:
+            cp = json.loads(cp_path.read_text(encoding="utf-8"))
+            if "step5_compose" not in cp.get("completed_steps", []):
+                return cp
+            else:
+                # Completed run — delete checkpoint so next run starts fresh
+                cp_path.unlink()
+                print(f"  [Resume] Previous run complete, starting fresh.")
+                return {}
+        except Exception:
+            pass
+    # Scan subdirectories for incomplete checkpoints
+    for sub in work_dir.iterdir():
+        if not sub.is_dir():
+            continue
+        sub_cp = sub / "checkpoint.json"
+        if not sub_cp.exists():
+            continue
+        try:
+            cp = json.loads(sub_cp.read_text(encoding="utf-8"))
+            if "step5_compose" not in cp.get("completed_steps", []):
+                print(f"  [Resume] Found incomplete run in: {sub.name}")
+                return cp
+            else:
+                # Completed — delete checkpoint
+                sub_cp.unlink()
+        except Exception:
+            continue
+    return {}
 
 
 def _step_done(checkpoint: dict, step: str) -> bool:
@@ -427,38 +451,49 @@ def main():
             sys.exit(1)
     args.topic = topic
 
-    work_dir = Path(args.output).resolve()
-    work_dir.mkdir(parents=True, exist_ok=True)
+    parent_dir = Path(args.output).resolve()
+    parent_dir.mkdir(parents=True, exist_ok=True)
 
-    # Resume: load checkpoint if --resume is set
+    # Resume: scan for incomplete checkpoint in parent dir or subdirectories
     if args.resume:
-        checkpoint = _load_checkpoint(work_dir)
+        checkpoint = _load_checkpoint(parent_dir)
         if checkpoint:
             print(f"  [Resume] Found checkpoint: {checkpoint.get('completed_steps', [])}")
-            # Override topic from checkpoint so we continue the exact same run
             if checkpoint.get("topic"):
                 args.topic = checkpoint["topic"]
                 topic = args.topic
         else:
-            print(f"  [Resume] No matching checkpoint, starting fresh.")
+            print(f"  [Resume] No incomplete checkpoint, starting fresh.")
+            checkpoint = {}
     else:
-        # Clear old checkpoint
-        cp_path = work_dir / "checkpoint.json"
-        if cp_path.exists():
-            cp_path.unlink()
         checkpoint = {}
 
+    # ===== Step 0: Generate script (with validation + retry) =====
+    print("=" * 60)
+    print("Step 0: Generating script via LLM (SenseNova DeepSeek V4 Flash)...")
+
+    # Determine run directory:
+    # - On resume: use the directory where checkpoint.json was found
+    # - On fresh start: create a subfolder named by YouTube title AFTER script generation
+    if checkpoint and checkpoint.get("_run_dir"):
+        work_dir = Path(checkpoint["_run_dir"])
+    elif checkpoint and checkpoint.get("topic"):
+        # Fallback: try to find checkpoint in subdirectories
+        work_dir = parent_dir  # temporary, will be overridden
+        for sub in parent_dir.iterdir():
+            if sub.is_dir() and (sub / "checkpoint.json").exists():
+                work_dir = sub
+                break
+    else:
+        work_dir = parent_dir  # temporary, script goes here first
+
+    # Create subdirs
     img_dir = work_dir / "images"
     clips_dir = work_dir / "clips"
     audio_dir = work_dir / "audio"
     sub_dir = work_dir / "subtitles"
     vid_dir = work_dir / "videos"
-    for d in [img_dir, clips_dir, audio_dir, sub_dir, vid_dir]:
-        d.mkdir(parents=True, exist_ok=True)
 
-    # ===== Step 0: Generate script (with validation + retry) =====
-    print("=" * 60)
-    print("Step 0: Generating script via LLM (SenseNova DeepSeek V4 Flash)...")
     script_path = work_dir / "script.json"
     if _step_done(checkpoint, "step0_script") and script_path.exists():
         print("  [Resume] Loading existing script...")
@@ -466,6 +501,23 @@ def main():
     else:
         script = _generate_script_with_retry(args.topic, args.cefr, args.lessons_dir,
                                              args.num_lines, enhanced=(args.structure == "enhanced"))
+        # After script generation, create a subfolder named by YouTube title
+        yt_title = script.get("youtube_title", script.get("title", topic))
+        safe_title = re.sub(r'[\U0001F000-\U0001FFFF]', '', yt_title)  # remove emoji
+        safe_title = re.sub(r'[\\/:*?"<>|]', '', safe_title).strip()
+        safe_title = re.sub(r'\s+', '_', safe_title)[:80]  # limit length
+        if not safe_title:
+            safe_title = re.sub(r'[^\w\s-]', '', topic).strip().replace(' ', '_')
+        work_dir = parent_dir / safe_title
+        work_dir.mkdir(parents=True, exist_ok=True)
+        img_dir = work_dir / "images"
+        clips_dir = work_dir / "clips"
+        audio_dir = work_dir / "audio"
+        sub_dir = work_dir / "subtitles"
+        vid_dir = work_dir / "videos"
+        script_path = work_dir / "script.json"
+        for d in [img_dir, clips_dir, audio_dir, sub_dir, vid_dir]:
+            d.mkdir(parents=True, exist_ok=True)
         script_path.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
         _save_checkpoint(work_dir, "step0_script", topic=topic, cefr=args.cefr, structure=args.structure)
     print(f"  Script saved: {script_path}")
@@ -971,6 +1023,12 @@ def main():
                 line_to_group=line_to_group,
             )
         _save_checkpoint(work_dir, "step5_compose")
+
+    # Clean up checkpoint — next run will start fresh with a new topic
+    cp_path = work_dir / "checkpoint.json"
+    if cp_path.exists():
+        cp_path.unlink()
+        print("  [Checkpoint] Cleared — next run will start fresh.")
 
     print("\n" + "=" * 60)
     print(f"DONE! Final video: {final_path}")
