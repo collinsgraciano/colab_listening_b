@@ -1029,6 +1029,30 @@ def main():
             )
         _save_checkpoint(work_dir, "step5_compose")
 
+    # ===== Step 6: Upscale to 4K =====
+    print("\n" + "=" * 60)
+    print("Step 6: Upscaling to 4K...")
+    final_4k_path = vid_dir / f"{safe_vid_name}_4K.mp4"
+    if _step_done(checkpoint, "step6_4k") and final_4k_path.exists():
+        print("  [Resume] 4K video already exists, skipping...")
+    else:
+        r = subprocess.run(
+            ["ffmpeg", "-i", final_path,
+             "-vf", "scale=3840:2160:flags=lanczos",
+             "-c:v", "libx264", "-crf", "18", "-preset", "slow",
+             "-c:a", "copy",
+             str(final_4k_path), "-y"],
+            capture_output=True, timeout=600)
+        if r.returncode == 0 and final_4k_path.exists():
+            size_4k = os.path.getsize(final_4k_path) / (1024 * 1024)
+            print(f"  4K video saved: {final_4k_path} ({size_4k:.1f}MB)")
+            _save_checkpoint(work_dir, "step6_4k")
+        else:
+            print(f"  [4K] Upscaling failed, 720p version is still available.")
+            stderr = r.stderr.decode("utf-8", errors="replace")[-500:] if r.stderr else ""
+            if stderr:
+                print(f"  [4K] FFmpeg stderr: {stderr}")
+
     # Clean up checkpoint — next run will start fresh with a new topic
     cp_path = work_dir / "checkpoint.json"
     if cp_path.exists():
@@ -1038,6 +1062,9 @@ def main():
     print("\n" + "=" * 60)
     print(f"DONE! Final video: {final_path}")
     print(f"Size: {os.path.getsize(final_path) / (1024*1024):.1f}MB")
+    if final_4k_path.exists():
+        print(f"4K video: {final_4k_path}")
+        print(f"4K Size: {os.path.getsize(final_4k_path) / (1024*1024):.1f}MB")
 
 
 if __name__ == "__main__":
