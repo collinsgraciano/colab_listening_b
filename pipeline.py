@@ -138,10 +138,6 @@ def _generate_script_with_retry(topic, cefr, lessons_dir, num_lines,
                 return script
             print(f"  [Script] Invalid: {msg}")
         except Exception as e:
-            if "quota exceeded" in str(e):
-                print(f"  [Script] FATAL: LLM quota exceeded — aborting retries.")
-                print(f"  [Script] Try: --model {'glm-5.2' if os.environ.get('SENSENOVA_MODEL', 'deepseek-v4-flash') == 'deepseek-v4-flash' else 'deepseek-v4-flash'}")
-                raise
             print(f"  [Script] Error: {e}")
         if attempt < max_attempts - 1:
             time.sleep(3)

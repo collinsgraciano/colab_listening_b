@@ -19,53 +19,63 @@ SENSENOVA_MODEL = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
 
 def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
           max_tokens: int = 8192) -> str:
-    """Call SenseNova LLM chat completion, return content string."""
+    """Call SenseNova LLM chat completion, return content string.
+
+    Retries on HTTP 429 (rate limit) with exponential backoff.
+    """
+    import time as _time
+
     # Read model at call time (not module import time) so --model flag works
     model = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
     api_key = os.environ.get("SENSENOVA_API_KEY", "")
     base_url = os.environ.get("SENSENOVA_BASE", "https://token.sensenova.cn/v1")
-    body = {
-        "model": model,
-        "messages": messages,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-    }
-    data = json.dumps(body).encode("utf-8")
-    req = urllib.request.Request(
-        f"{base_url}/chat/completions",
-        data=data,
-        method="POST",
-    )
-    req.add_header("Authorization", f"Bearer {api_key}")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            raw = resp.read().decode("utf-8")
-            if not raw.strip():
-                raise RuntimeError("LLM returned empty response body (HTTP 200, 0 bytes)")
-            try:
-                result = json.loads(raw)
-            except json.JSONDecodeError:
-                raise RuntimeError(f"LLM returned non-JSON response (first 500 chars): {raw[:500]}") from None
-            if "choices" not in result or not result["choices"]:
-                raise RuntimeError(f"LLM response has no 'choices' field: {raw[:500]}")
-            content = result["choices"][0]["message"]["content"]
-            if not content or not content.strip():
-                raise RuntimeError(
-                    f"LLM returned empty content (HTTP 200, model={model}). "
-                    f"Raw response (first 500 chars): {raw[:500]}"
-                )
-            return content
-    except urllib.error.HTTPError as e:
-        err = e.read().decode("utf-8", errors="replace")
-        if e.code == 429 or "insufficient_quota" in err or "quota" in err.lower():
-            raise RuntimeError(
-                f"LLM quota exceeded (HTTP {e.code}). "
-                f"Model: {model}. "
-                f"Try switching to --model {'glm-5.2' if model == 'deepseek-v4-flash' else 'deepseek-v4-flash'}. "
-                f"Error: {err[:300]}"
-            ) from e
-        raise RuntimeError(f"LLM HTTP {e.code}: {err}") from e
+
+    # 429 rate-limit retry: backoff 30s, 60s, 90s, 120s, 150s
+    _429_BACKOFFS = [30, 60, 90, 120, 150]
+
+    for _429_attempt in range(len(_429_BACKOFFS) + 1):
+        body = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        data = json.dumps(body).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base_url}/chat/completions",
+            data=data,
+            method="POST",
+        )
+        req.add_header("Authorization", f"Bearer {api_key}")
+        req.add_header("Content-Type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                raw = resp.read().decode("utf-8")
+                if not raw.strip():
+                    raise RuntimeError("LLM returned empty response body (HTTP 200, 0 bytes)")
+                try:
+                    result = json.loads(raw)
+                except json.JSONDecodeError:
+                    raise RuntimeError(f"LLM returned non-JSON response (first 500 chars): {raw[:500]}") from None
+                if "choices" not in result or not result["choices"]:
+                    raise RuntimeError(f"LLM response has no 'choices' field: {raw[:500]}")
+                content = result["choices"][0]["message"]["content"]
+                if not content or not content.strip():
+                    raise RuntimeError(
+                        f"LLM returned empty content (HTTP 200, model={model}). "
+                        f"Raw response (first 500 chars): {raw[:500]}"
+                    )
+                return content
+        except urllib.error.HTTPError as e:
+            err = e.read().decode("utf-8", errors="replace")
+            if e.code == 429 and _429_attempt < len(_429_BACKOFFS):
+                wait = _429_BACKOFFS[_429_attempt]
+                print(f"  [LLM] HTTP 429 rate limited, waiting {wait}s before retry "
+                      f"({_429_attempt+1}/{len(_429_BACKOFFS)})... "
+                      f"Model: {model}")
+                _time.sleep(wait)
+                continue
+            raise RuntimeError(f"LLM HTTP {e.code}: {err}") from e
 
 
 def _repair_truncated_json(text: str) -> str:
@@ -288,10 +298,6 @@ def generate_listening_script(topic: str, cefr: str = "A2",
         except (json.JSONDecodeError, RuntimeError) as e:
             last_error = e
             err_str = str(e)
-            # On quota errors, abort immediately — no point retrying the same model
-            if "quota exceeded" in err_str:
-                print(f"  [LLM] FATAL: {err_str}")
-                raise RuntimeError(err_str) from e
             # Log raw content on JSON parse errors for debugging
             if isinstance(e, json.JSONDecodeError):
                 print(f"  [LLM retry {attempt+1}/3] JSONDecodeError: {err_str[:200]}")
