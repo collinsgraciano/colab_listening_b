@@ -5,7 +5,7 @@ Usage:
     python pipeline.py --topic "At the Pharmacy" --cefr A2 --output ./output --mcp-token YOUR_TOKEN
 
 Steps:
-1. LLM script generation (SenseNova DeepSeek V4 Flash)
+1. LLM script generation (SenseNova: deepseek-v4-flash or glm-5.2)
 2. Concurrent: image generation + TTS audio (Kokoro EN, edge-tts ZH)
 3. Group consecutive dialogue lines, generate one video clip per group
 4. Timeline + SRT building
@@ -495,7 +495,8 @@ def main():
 
     # ===== Step 0: Generate script (with validation + retry) =====
     print("=" * 60)
-    print("Step 0: Generating script via LLM (SenseNova DeepSeek V4 Flash)...")
+    _llm_model = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
+    print(f"Step 0: Generating script via LLM (SenseNova {_llm_model})...")
 
     # Determine run directory:
     # - On resume: use the directory recorded in the checkpoint (or newest subfolder)
