@@ -48,6 +48,13 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
             return result["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as e:
         err = e.read().decode("utf-8", errors="replace")
+        if e.code == 429 or "insufficient_quota" in err or "quota" in err.lower():
+            raise RuntimeError(
+                f"LLM quota exceeded (HTTP {e.code}). "
+                f"Model: {SENSENOVA_MODEL}. "
+                f"Try switching to --model {'glm-5.2' if SENSENOVA_MODEL == 'deepseek-v4-flash' else 'deepseek-v4-flash'}. "
+                f"Error: {err[:300]}"
+            ) from e
         raise RuntimeError(f"LLM HTTP {e.code}: {err}") from e
 
 
@@ -270,7 +277,17 @@ def generate_listening_script(topic: str, cefr: str = "A2",
             break
         except (json.JSONDecodeError, RuntimeError) as e:
             last_error = e
-            print(f"  [LLM retry {attempt+1}/3] {type(e).__name__}: {str(e)[:200]}")
+            err_str = str(e)
+            # On quota errors, abort immediately — no point retrying the same model
+            if "quota exceeded" in err_str:
+                print(f"  [LLM] FATAL: {err_str}")
+                raise RuntimeError(err_str) from e
+            # Log raw content on JSON parse errors for debugging
+            if isinstance(e, json.JSONDecodeError):
+                print(f"  [LLM retry {attempt+1}/3] JSONDecodeError: {err_str[:200]}")
+                print(f"  [LLM] Raw content (first 300 chars): {content[:300] if 'content' in dir() else 'N/A'}")
+            else:
+                print(f"  [LLM retry {attempt+1}/3] {type(e).__name__}: {err_str[:200]}")
             if attempt < 2:
                 import time
                 time.sleep(5)
