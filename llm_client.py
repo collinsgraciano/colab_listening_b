@@ -20,19 +20,23 @@ SENSENOVA_MODEL = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
 def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
           max_tokens: int = 8192) -> str:
     """Call SenseNova LLM chat completion, return content string."""
+    # Read model at call time (not module import time) so --model flag works
+    model = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
+    api_key = os.environ.get("SENSENOVA_API_KEY", "")
+    base_url = os.environ.get("SENSENOVA_BASE", "https://token.sensenova.cn/v1")
     body = {
-        "model": SENSENOVA_MODEL,
+        "model": model,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
     }
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
-        f"{SENSENOVA_BASE}/chat/completions",
+        f"{base_url}/chat/completions",
         data=data,
         method="POST",
     )
-    req.add_header("Authorization", f"Bearer {SENSENOVA_API_KEY}")
+    req.add_header("Authorization", f"Bearer {api_key}")
     req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -48,7 +52,7 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
             content = result["choices"][0]["message"]["content"]
             if not content or not content.strip():
                 raise RuntimeError(
-                    f"LLM returned empty content (HTTP 200, model={SENSENOVA_MODEL}). "
+                    f"LLM returned empty content (HTTP 200, model={model}). "
                     f"Raw response (first 500 chars): {raw[:500]}"
                 )
             return content
@@ -57,8 +61,8 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
         if e.code == 429 or "insufficient_quota" in err or "quota" in err.lower():
             raise RuntimeError(
                 f"LLM quota exceeded (HTTP {e.code}). "
-                f"Model: {SENSENOVA_MODEL}. "
-                f"Try switching to --model {'glm-5.2' if SENSENOVA_MODEL == 'deepseek-v4-flash' else 'deepseek-v4-flash'}. "
+                f"Model: {model}. "
+                f"Try switching to --model {'glm-5.2' if model == 'deepseek-v4-flash' else 'deepseek-v4-flash'}. "
                 f"Error: {err[:300]}"
             ) from e
         raise RuntimeError(f"LLM HTTP {e.code}: {err}") from e
