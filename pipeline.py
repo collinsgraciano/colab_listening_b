@@ -436,8 +436,8 @@ def main():
     parser.add_argument("--mcp-tokens", default=None, help="TJGenerators MCP OAuth tokens, comma-separated for multi-token rotation")
     parser.add_argument("--mcp-token", default=None, help="(Deprecated) Single MCP token. Use --mcp-tokens instead.")
     parser.add_argument("--api-key", default=None, help="SenseNova API key (or set SENSENOVA_API_KEY env var)")
-    parser.add_argument("--structure", default="original", choices=["original", "enhanced"],
-                        help="Video structure: 'original' (4-chapter) or 'enhanced' (7-chapter with vocab+quiz+slow)")
+    parser.add_argument("--structure", default="original", choices=["original", "enhanced", "static"],
+                        help="Video structure: 'original' (4-chapter, video clips), 'enhanced' (7-chapter with vocab+quiz+slow), or 'static' (all images, no video generation)")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
     parser.add_argument("--no-4k", dest="no_4k", action="store_true", help="Skip the final 4K upscaling step")
     parser.add_argument("--upscale-timeout", type=int, default=3600, help="Timeout in seconds for 4K upscale (default 3600)")
@@ -566,6 +566,7 @@ def main():
     dialogue = script.get("dialogue", [])
     n = len(dialogue)
     is_enhanced = (args.structure == "enhanced")
+    is_static = (args.structure == "static")
     tts_thread = None  # set when a fresh TTS run is started (non-resume path)
 
     char_a_desc = script.get("char_a_description", "friendly young man")
@@ -587,8 +588,11 @@ def main():
     all_zh_exist = all((audio_dir / f"zh_{i}.mp3").exists() for i in range(n))
     narration_files = ["intro.mp3", "outro.mp3", "practice_intro.mp3"]
     narration_exist = all((audio_dir / f).exists() for f in narration_files)
+    # Static mode: also check per-line dialogue images
+    all_dialogue_imgs_exist = (not is_static) or all(
+        (img_dir / f"dialogue_img_{i}.png").exists() for i in range(n))
 
-    if step2_done and char_scene_file.exists() and scene_file.exists() and all_audio_exist and all_zh_exist and narration_exist:
+    if step2_done and char_scene_file.exists() and scene_file.exists() and all_audio_exist and all_zh_exist and narration_exist and all_dialogue_imgs_exist:
         print("  [Resume] Step 2 already done, loading existing images + audio...")
         # Re-upload images to get CDN URLs (needed for video generation)
         image_urls = {}
@@ -686,33 +690,78 @@ def main():
             tts_thread.join(timeout=5)
             sys.exit(1)
 
+        # Static mode: generate one dialogue image per line (no video clips)
+        if is_static:
+            char_scene_cdn = image_urls.get("char_scene.png", "")
+            print(f"  [Image] Generating {n} dialogue line images (static mode)...")
+            for i, line in enumerate(dialogue):
+                d_img_path = str(img_dir / f"dialogue_img_{i}.png")
+                if os.path.exists(d_img_path):
+                    print(f"    [Image] dialogue_img_{i} already exists, skipping")
+                    continue
+                img_prompt = line.get("image_prompt", f"{char_a_desc} and {char_b_desc} at {scene}, 3D cartoon style, 16:9")
+                print(f"    [Image] Generating dialogue_img_{i}/{n}...")
+                try:
+                    gen_params = {
+                        "prompt": img_prompt,
+                        "provider": "frontier",
+                        "quality": "high",
+                        "image_size": "landscape_16_9",
+                        "output_format": "png",
+                    }
+                    if char_scene_cdn:
+                        gen_params["image_urls"] = char_scene_cdn
+                    result = call_tool("generate_image", gen_params)
+                    task_id = parse_task_id(result)
+                    data = poll_task(task_id, interval=10, max_wait=600)
+                    url = data.get("url", "")
+                    if url:
+                        download_file(url, d_img_path)
+                        print(f"      [Image] Downloaded: dialogue_img_{i}.png")
+                    else:
+                        print(f"      [Image] WARNING: No URL for dialogue_img_{i}, will use scene image as fallback")
+                except RuntimeError as e:
+                    if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
+                        print("\n  [FATAL] 所有 MCP Token 积分已耗尽！请充值后重新运行（--resume）继续。")
+                        tts_thread.join(timeout=5)
+                        sys.exit(1)
+                    print(f"      [Image] ERROR generating dialogue_img_{i}: {e}")
+                except Exception as e:
+                    print(f"      [Image] ERROR generating dialogue_img_{i}: {e}")
+
         print("  [Image] All images done. Waiting for TTS...")
 
     # clip_0 (scene establishing pan) doesn't depend on TTS — launch it now so
     # it generates in parallel while the TTS thread finishes
     scene_url = image_urls.get("scene.png", "")
     char_scene_url = image_urls.get("char_scene.png", "")
-    scene_clip_task = {
-        "image_urls": scene_url,
-        "prompt": f"{scene}, slow camera pan, establishing shot, no characters, 3D cartoon style. The video MUST closely reference the uploaded reference image. CRITICAL: do NOT show any characters in this establishing shot.",
-        "filename": "clip_0.mp4",
-        "duration": 5,  # scene pan: 5s fixed
-        "generate_audio": True,  # clip_0 generates ambient sound
-    }
     clips_dir.mkdir(parents=True, exist_ok=True)
-    clip_paths = [str(clips_dir / "clip_0.mp4")
-                  if _file_ok(str(clips_dir / "clip_0.mp4"), 500000) else None]
     scene_clip_thread = None
-    if clip_paths[0] is None:
-        scene_clip_thread = threading.Thread(
-            target=_generate_video_clips,
-            args=([scene_clip_task], clips_dir, clip_paths),
-            daemon=True,
-        )
-        scene_clip_thread.start()
-        print("  [Video] Scene clip (clip_0) generation started in parallel with TTS.")
+
+    if is_static:
+        # Static mode: no video clips at all — all segments use static images
+        clip_paths = []
+        print("  [Static] Skipping clip_0 generation (static mode — no video clips)")
     else:
-        print("  [Resume] clip_0 already exists, reusing.")
+        scene_clip_task = {
+            "image_urls": scene_url,
+            "prompt": f"{scene}, slow camera pan, establishing shot, no characters, 3D cartoon style. The video MUST closely reference the uploaded reference image. CRITICAL: do NOT show any characters in this establishing shot.",
+            "filename": "clip_0.mp4",
+            "duration": 5,  # scene pan: 5s fixed
+            "generate_audio": True,  # clip_0 generates ambient sound
+        }
+        clip_paths = [str(clips_dir / "clip_0.mp4")
+                      if _file_ok(str(clips_dir / "clip_0.mp4"), 500000) else None]
+        if clip_paths[0] is None:
+            scene_clip_thread = threading.Thread(
+                target=_generate_video_clips,
+                args=([scene_clip_task], clips_dir, clip_paths),
+                daemon=True,
+            )
+            scene_clip_thread.start()
+            print("  [Video] Scene clip (clip_0) generation started in parallel with TTS.")
+        else:
+            print("  [Resume] clip_0 already exists, reusing.")
 
     # Wait for TTS if it was started (not in resume mode)
     if tts_thread is not None:
@@ -736,144 +785,143 @@ def main():
 
     # ===== Step 3: Generate video clips =====
     print("\n" + "=" * 60)
-    print(f"Step 3: Generating video clips (Seedance2, up to {args.clip_duration}s per group)...")
 
-    # Scene clip thread was launched in Step 2 — join it if still running
-    # (it usually finishes while TTS is still going)
-    if scene_clip_thread is not None:
-        scene_clip_thread.join()
-
-    # 方案 B: group consecutive lines regardless of speaker (TTS durations ready)
-    dialogue_durations = tts_results.get("dialogue_durations", [])
-    groups = build_dialogue_groups(dialogue, dialogue_durations, args.clip_duration)
-    n_groups = len(groups)
-    print(f"  [Group] {len(dialogue)} dialogue lines -> {n_groups} video groups:")
-    for gi, g in enumerate(groups):
-        print(f"    Group {gi}: lines={g['lines']} speakers={g['speakers']} total_audio={g['total_audio']:.1f}s")
-
-    # Group clip tasks (clip_0 scene pan was already launched in Step 2)
-    group_tasks = []
-    for gi, group in enumerate(groups):
-        # Use combined character-scene image as reference (both characters in one image)
-        combined_prompt = merge_group_prompt(group, dialogue)
-        video_prompt = f"{scene}. {combined_prompt} 3D cartoon style. The video MUST closely reference the uploaded reference image — the characters' appearance, clothing, and the scene must match the reference image exactly. CRITICAL: only ONE instance of each character should appear on screen — do NOT create duplicate characters or clones. Each character appears exactly once, no mirror images, no doubling."
-        # Dynamic duration: match group's total TTS audio + pad between/after lines
-        # Each line has pad seconds of silence after it, so total = sum(audio_dur) + n_lines * pad
-        n_lines_in_group = len(group["lines"])
-        group_total_with_pad = group["total_audio"] + n_lines_in_group * args.pad
-        group_dur = round(group_total_with_pad)  # Seedance2 requires integer seconds
-        group_dur = max(4, min(group_dur, 15))  # Seedance2 API: duration must be 4-15
-        group_tasks.append({
-            "image_urls": char_scene_url,
-            "prompt": video_prompt,
-            "filename": f"clip_{gi+1}.mp4",
-            "duration": group_dur,
-            "generate_audio": False,  # group clips: audio overlaid from TTS
-        })
-    video_tasks = [scene_clip_task] + group_tasks
-
-    # Per-clip resume: reuse any existing clip file (saves credits on partial runs)
-    for gi in range(len(group_tasks)):
-        p = str(clips_dir / f"clip_{gi+1}.mp4")
-        clip_paths.append(p if _file_ok(p, 500000) else None)
-    reused = sum(1 for p in clip_paths if p is not None)
-    if reused:
-        print(f"  [Resume] Reusing {reused}/{len(video_tasks)} existing clips.")
-
-    if all(p is not None for p in clip_paths):
-        print("  [Resume] Step 3 already done — all clips present.")
-    else:
-        # Generate the missing group clips (offset=1: clip_paths[0] is the scene clip)
-        video_thread = threading.Thread(
-            target=_generate_video_clips,
-            args=(group_tasks, clips_dir, clip_paths, 1),
-            daemon=True,
-        )
-        video_thread.start()
-
-        print("  Waiting for group video clips to complete...")
-        video_thread.join()
-        print("  >> Video clips done.")
-        _save_checkpoint(work_dir, "step3_video")
-
-    # Collect results — keep None entries to preserve index alignment
+    # Collect TTS results (shared by both paths)
     narration = tts_results.get("narration", {})
     normal_paths = tts_results.get("normal_paths", [])
     dialogue_durations = tts_results.get("dialogue_durations", [])
     zh_paths = tts_results.get("zh_paths", [])
-    clip_paths_final = clip_paths  # preserve index alignment for group_info
-    ok_count = sum(1 for p in clip_paths if p is not None)
-    print(f"  Clips: {ok_count}/{len(video_tasks)}, TTS: {len(normal_paths)} EN + {sum(1 for p in zh_paths if p)} ZH")
 
-    # Build group info: concat each group's TTS audio into a single file
-    # Insert pad seconds of silence between lines so audio timeline matches SRT timeline.
-    # Timeline per line: audio_dur + pad. So group audio = line0 + pad + line1 + pad + ... + lineN + pad
-    group_audio_paths = []
-    group_info = []
-    for gi, group in enumerate(groups):
-        clip_idx = gi + 1  # scene is index 0
-        clip_path = clip_paths[clip_idx] if clip_idx < len(clip_paths) else None
+    if is_static:
+        # Static mode: no video clips, no grouping — all segments use static images
+        print("Step 3: Skipped (static mode — no video generation)")
+        clip_paths_final = []
+        group_info = []
+        line_to_group = {}
+        _save_checkpoint(work_dir, "step3_video")
+        print(f"  TTS: {len(normal_paths)} EN + {sum(1 for p in zh_paths if p)} ZH")
+    else:
+        print(f"Step 3: Generating video clips (Seedance2, up to {args.clip_duration}s per group)...")
 
-        # Build concat list with silence between lines
-        # Use FFmpeg filter_complex to insert silence between audio files
-        group_audio_path = str(audio_dir / f"group_audio_{gi}.mp3")
-        lines_audio = [normal_paths[li] for li in group["lines"]
-                       if li < len(normal_paths) and os.path.exists(normal_paths[li])]
-        # Track which original line indices survived (missing audio files are dropped)
-        kept_lines = [li for li in group["lines"]
-                      if li < len(normal_paths) and os.path.exists(normal_paths[li])]
-        n_lines = len(lines_audio)  # filter graph must match actual input count
-        if not lines_audio:
-            continue
+        # Scene clip thread was launched in Step 2 — join it if still running
+        # (it usually finishes while TTS is still going)
+        if scene_clip_thread is not None:
+            scene_clip_thread.join()
 
-        if n_lines == 1:
-            # Single line: just re-encode to standardize format
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", lines_audio[0],
-                 "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                 group_audio_path],
-                capture_output=True, timeout=30)
+        # 方案 B: group consecutive lines regardless of speaker (TTS durations ready)
+        groups = build_dialogue_groups(dialogue, dialogue_durations, args.clip_duration)
+        n_groups = len(groups)
+        print(f"  [Group] {len(dialogue)} dialogue lines -> {n_groups} video groups:")
+        for gi, g in enumerate(groups):
+            print(f"    Group {gi}: lines={g['lines']} speakers={g['speakers']} total_audio={g['total_audio']:.1f}s")
+
+        # Group clip tasks (clip_0 scene pan was already launched in Step 2)
+        group_tasks = []
+        for gi, group in enumerate(groups):
+            # Use combined character-scene image as reference (both characters in one image)
+            combined_prompt = merge_group_prompt(group, dialogue)
+            video_prompt = f"{scene}. {combined_prompt} 3D cartoon style. The video MUST closely reference the uploaded reference image — the characters' appearance, clothing, and the scene must match the reference image exactly. CRITICAL: only ONE instance of each character should appear on screen — do NOT create duplicate characters or clones. Each character appears exactly once, no mirror images, no doubling."
+            # Dynamic duration: match group's total TTS audio + pad between/after lines
+            n_lines_in_group = len(group["lines"])
+            group_total_with_pad = group["total_audio"] + n_lines_in_group * args.pad
+            group_dur = round(group_total_with_pad)  # Seedance2 requires integer seconds
+            group_dur = max(4, min(group_dur, 15))  # Seedance2 API: duration must be 4-15
+            group_tasks.append({
+                "image_urls": char_scene_url,
+                "prompt": video_prompt,
+                "filename": f"clip_{gi+1}.mp4",
+                "duration": group_dur,
+                "generate_audio": False,
+            })
+        video_tasks = [scene_clip_task] + group_tasks
+
+        # Per-clip resume: reuse any existing clip file (saves credits on partial runs)
+        for gi in range(len(group_tasks)):
+            p = str(clips_dir / f"clip_{gi+1}.mp4")
+            clip_paths.append(p if _file_ok(p, 500000) else None)
+        reused = sum(1 for p in clip_paths if p is not None)
+        if reused:
+            print(f"  [Resume] Reusing {reused}/{len(video_tasks)} existing clips.")
+
+        if all(p is not None for p in clip_paths):
+            print("  [Resume] Step 3 already done — all clips present.")
         else:
-            # Multiple lines: pad each with silence, then concat — single ffmpeg command
-            inputs = []
-            for la in lines_audio:
-                inputs.extend(["-i", la])
-            filter_parts = []
-            for j in range(n_lines):
-                line_idx = kept_lines[j]
-                line_dur = dialogue_durations[line_idx] if line_idx < len(dialogue_durations) else 3.0
-                pad_dur = line_dur + args.pad
-                filter_parts.append(f"[{j}:a]apad=whole_dur={pad_dur:.3f}[a{j}]")
-            concat_inputs = "".join(f"[a{j}]" for j in range(n_lines))
-            filter_parts.append(f"{concat_inputs}concat=n={n_lines}:v=0:a=1[a]")
-            filter_complex = ";".join(filter_parts)
-            subprocess.run(
-                ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_complex,
-                 "-map", "[a]",
-                 "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                 group_audio_path],
-                capture_output=True, timeout=60)
+            video_thread = threading.Thread(
+                target=_generate_video_clips,
+                args=(group_tasks, clips_dir, clip_paths, 1),
+                daemon=True,
+            )
+            video_thread.start()
 
-        if os.path.exists(group_audio_path) and os.path.getsize(group_audio_path) > 1000:
-            group_total_dur = _get_audio_duration(group_audio_path)
-        else:
-            group_total_dur = group["total_audio"]
-            group_audio_path = normal_paths[group["lines"][0]] if normal_paths else None
+            print("  Waiting for group video clips to complete...")
+            video_thread.join()
+            print("  >> Video clips done.")
+            _save_checkpoint(work_dir, "step3_video")
 
-        group_audio_paths.append(group_audio_path)
-        group_info.append({
-            "clip_path": clip_path,
-            "audio_path": group_audio_path,
-            "total_dur": group_total_dur,
-            "lines": list(group["lines"]),
-        })
-        print(f"  [Group {gi}] audio concat: {group_total_dur:.1f}s, lines={group['lines']}")
+        clip_paths_final = clip_paths  # preserve index alignment for group_info
+        ok_count = sum(1 for p in clip_paths if p is not None)
+        print(f"  Clips: {ok_count}/{len(video_tasks)}, TTS: {len(normal_paths)} EN + {sum(1 for p in zh_paths if p)} ZH")
 
-    # Map: line_idx -> group_idx (for compose to know which group a line belongs to)
-    line_to_group = {}
-    for gi, g in enumerate(groups):
-        for li in g["lines"]:
-            line_to_group[li] = gi
+        # Build group info: concat each group's TTS audio into a single file
+        group_info = []
+        for gi, group in enumerate(groups):
+            clip_idx = gi + 1  # scene is index 0
+            clip_path = clip_paths[clip_idx] if clip_idx < len(clip_paths) else None
+
+            group_audio_path = str(audio_dir / f"group_audio_{gi}.mp3")
+            lines_audio = [normal_paths[li] for li in group["lines"]
+                           if li < len(normal_paths) and os.path.exists(normal_paths[li])]
+            kept_lines = [li for li in group["lines"]
+                          if li < len(normal_paths) and os.path.exists(normal_paths[li])]
+            n_lines = len(lines_audio)
+            if not lines_audio:
+                continue
+
+            if n_lines == 1:
+                subprocess.run(
+                    ["ffmpeg", "-y", "-i", lines_audio[0],
+                     "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                     group_audio_path],
+                    capture_output=True, timeout=30)
+            else:
+                inputs = []
+                for la in lines_audio:
+                    inputs.extend(["-i", la])
+                filter_parts = []
+                for j in range(n_lines):
+                    line_idx = kept_lines[j]
+                    line_dur = dialogue_durations[line_idx] if line_idx < len(dialogue_durations) else 3.0
+                    pad_dur = line_dur + args.pad
+                    filter_parts.append(f"[{j}:a]apad=whole_dur={pad_dur:.3f}[a{j}]")
+                concat_inputs = "".join(f"[a{j}]" for j in range(n_lines))
+                filter_parts.append(f"{concat_inputs}concat=n={n_lines}:v=0:a=1[a]")
+                filter_complex = ";".join(filter_parts)
+                subprocess.run(
+                    ["ffmpeg", "-y"] + inputs + ["-filter_complex", filter_complex,
+                     "-map", "[a]",
+                     "-c:a", "libmp3lame", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                     group_audio_path],
+                    capture_output=True, timeout=60)
+
+            if os.path.exists(group_audio_path) and os.path.getsize(group_audio_path) > 1000:
+                group_total_dur = _get_audio_duration(group_audio_path)
+            else:
+                group_total_dur = group["total_audio"]
+                group_audio_path = normal_paths[group["lines"][0]] if normal_paths else None
+
+            group_info.append({
+                "clip_path": clip_path,
+                "audio_path": group_audio_path,
+                "total_dur": group_total_dur,
+                "lines": list(group["lines"]),
+            })
+            print(f"  [Group {gi}] audio concat: {group_total_dur:.1f}s, lines={group['lines']}")
+
+        # Map: line_idx -> group_idx
+        line_to_group = {}
+        for gi, g in enumerate(groups):
+            for li in g["lines"]:
+                line_to_group[li] = gi
 
     # ===== Step 4: Build timeline + SRT =====
     print("\n" + "=" * 60)
@@ -1075,6 +1123,22 @@ def main():
                 progress_cb=progress_cb,
                 group_info=group_info,
                 line_to_group=line_to_group,
+            )
+        elif is_static:
+            from video_compose import compose_static
+            dialogue_images = [str(img_dir / f"dialogue_img_{i}.png") for i in range(n)]
+            final_path = compose_static(
+                work_dir=str(work_dir),
+                dialogue_images=dialogue_images,
+                timeline=timeline,
+                script=script,
+                narration=narration,
+                normal_paths=normal_paths,
+                zh_paths=zh_paths,
+                scene_img=scene_img,
+                srt_dir=str(sub_dir),
+                pad=args.pad,
+                progress_cb=progress_cb,
             )
         else:
             final_path = compose_listening(
