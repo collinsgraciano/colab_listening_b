@@ -1181,7 +1181,7 @@ def main():
                  "-c:v", "libx264", "-crf", "18", "-preset", "medium", "-threads", "0",
                  "-c:a", "copy",
                  str(final_4k_path), "-y"],
-                capture_output=True, timeout=args.upscale_timeout)
+                capture_output=True)
         except subprocess.TimeoutExpired:
             print(f"  [4K] Upscaling timed out — 720p version is still available.")
             r = None
