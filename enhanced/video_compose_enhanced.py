@@ -660,7 +660,7 @@ def compose_listening_enhanced(
     _safe = _re.sub(r'[\U0001F000-\U0001FFFF]', '', _yt)
     _safe = _re.sub(r'[\\/:*?"<>|]', '', _safe).strip()
     _safe = _re.sub(r'\s+', '_', _safe)[:80] or "final_video"
-    final_path = str(vid_dir / f"{_safe}.mp4")
+    final_path = str(work / f"{_safe}.mp4")
 
     subtitle_entries = []
     t_cursor = 0.0
