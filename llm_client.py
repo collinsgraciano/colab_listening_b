@@ -45,7 +45,13 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
                 raise RuntimeError(f"LLM returned non-JSON response (first 500 chars): {raw[:500]}") from None
             if "choices" not in result or not result["choices"]:
                 raise RuntimeError(f"LLM response has no 'choices' field: {raw[:500]}")
-            return result["choices"][0]["message"]["content"]
+            content = result["choices"][0]["message"]["content"]
+            if not content or not content.strip():
+                raise RuntimeError(
+                    f"LLM returned empty content (HTTP 200, model={SENSENOVA_MODEL}). "
+                    f"Raw response (first 500 chars): {raw[:500]}"
+                )
+            return content
     except urllib.error.HTTPError as e:
         err = e.read().decode("utf-8", errors="replace")
         if e.code == 429 or "insufficient_quota" in err or "quota" in err.lower():
