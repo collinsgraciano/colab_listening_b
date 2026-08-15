@@ -436,6 +436,8 @@ def main():
     parser.add_argument("--mcp-tokens", default=None, help="TJGenerators MCP OAuth tokens, comma-separated for multi-token rotation")
     parser.add_argument("--mcp-token", default=None, help="(Deprecated) Single MCP token. Use --mcp-tokens instead.")
     parser.add_argument("--api-key", default=None, help="SenseNova API key (or set SENSENOVA_API_KEY env var)")
+    parser.add_argument("--model", default=None, choices=["deepseek-v4-flash", "glm-5.2"],
+                        help="SenseNova LLM model: 'deepseek-v4-flash' (default) or 'glm-5.2'")
     parser.add_argument("--structure", default="original", choices=["original", "enhanced", "static"],
                         help="Video structure: 'original' (4-chapter, video clips), 'enhanced' (7-chapter with vocab+quiz+slow), or 'static' (all images, no video generation)")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
@@ -446,6 +448,8 @@ def main():
     # Set API key from arg if provided
     if args.api_key:
         os.environ["SENSENOVA_API_KEY"] = args.api_key
+    if args.model:
+        os.environ["SENSENOVA_MODEL"] = args.model
     if not os.environ.get("SENSENOVA_API_KEY"):
         print("ERROR: SENSENOVA_API_KEY not set. Pass --api-key or set env var.")
         sys.exit(1)
