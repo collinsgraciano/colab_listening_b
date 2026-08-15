@@ -22,6 +22,7 @@ from video_compose import (
     _get_duration, _has_audio, _render_static_frame,
     _render_title_card, _render_practice_intro,
     FONT_EN, FONT_ZH, FONT_PH,
+    _VF_NORM, _probe_resolution,
 )
 
 
@@ -278,9 +279,9 @@ def compose_listening_enhanced(
                 if group_clip and os.path.exists(group_clip) and group_audio and os.path.exists(group_audio):
                     vid_dur = _get_duration(group_clip)
                     if vid_dur > 0 and group_dur > 0 and abs(vid_dur - group_dur) > 0.01:
-                        vf = f"setpts={group_dur/vid_dur:.4f}*PTS,fps=24"
+                        vf = f"setpts={group_dur/vid_dur:.4f}*PTS,{_VF_NORM},fps=24"
                     else:
-                        vf = "fps=24"
+                        vf = f"{_VF_NORM},fps=24"
                     cmd = ["ffmpeg", "-y", "-i", group_clip, "-i", group_audio,
                            "-t", f"{group_dur:.3f}", "-vf", vf,
                            "-map", "0:v:0", "-map", "1:a:0",
@@ -290,7 +291,7 @@ def compose_listening_enhanced(
                 else:
                     cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                            "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                           "-t", f"{group_dur:.3f}", "-vf", "fps=24",
+                           "-t", f"{group_dur:.3f}", "-vf", f"{_VF_NORM},fps=24",
                            "-map", "0:v:0", "-map", "1:a:0",
                            "-c:v", "libx264", "-pix_fmt", "yuv420p",
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -304,7 +305,7 @@ def compose_listening_enhanced(
                     print(f"  FFmpeg error group seg {gi}: {r.stderr[-200:] if r else 'timeout'}")
                     fb_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                               "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                              "-t", f"{group_dur:.3f}", "-vf", "fps=24",
+                              "-t", f"{group_dur:.3f}", "-vf", f"{_VF_NORM},fps=24",
                               "-map", "0:v:0", "-map", "1:a:0",
                               "-c:v", "libx264", "-pix_fmt", "yuv420p",
                               "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -381,9 +382,9 @@ def compose_listening_enhanced(
                 if group_clip and os.path.exists(group_clip):
                     vid_dur = _get_duration(group_clip)
                     if vid_dur > 0 and group_dur > 0:
-                        vf = f"setpts={group_dur/vid_dur:.4f}*PTS,fps=24"
+                        vf = f"setpts={group_dur/vid_dur:.4f}*PTS,{_VF_NORM},fps=24"
                     else:
-                        vf = "fps=24"
+                        vf = f"{_VF_NORM},fps=24"
                     cmd = ["ffmpeg", "-y", "-i", group_clip, "-i", slow_group_path,
                            "-t", f"{group_dur:.3f}", "-vf", vf,
                            "-map", "0:v:0", "-map", "1:a:0",
@@ -393,7 +394,7 @@ def compose_listening_enhanced(
                 else:
                     cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                            "-i", slow_group_path,
-                           "-t", f"{group_dur:.3f}", "-vf", "fps=24",
+                           "-t", f"{group_dur:.3f}", "-vf", f"{_VF_NORM},fps=24",
                            "-map", "0:v:0", "-map", "1:a:0",
                            "-c:v", "libx264", "-pix_fmt", "yuv420p",
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -495,7 +496,7 @@ def compose_listening_enhanced(
             if audio_file and os.path.exists(audio_file):
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", video_src, "-i", audio_file,
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", _VF_NORM, "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
                        out_path]
@@ -503,7 +504,7 @@ def compose_listening_enhanced(
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", video_src,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", _VF_NORM, "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        out_path]
 
@@ -513,7 +514,7 @@ def compose_listening_enhanced(
             title_overlay = str(static_dir / "title_overlay.png")
             _render_title_card(title_en, title_zh, "", scene_img, title_overlay)
             vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
-            vf = f"setpts={duration/vid_dur:.4f}*PTS,fps=24" if vid_dur > 0 else "fps=24"
+            vf = f"setpts={duration/vid_dur:.4f}*PTS,{_VF_NORM},fps=24" if vid_dur > 0 else f"{_VF_NORM},fps=24"
             fade_af_title = f"afade=t=in:st=0:d=0.05,afade=t=out:st={max(0, duration-0.05):.2f}:d=0.05"
             if _has_audio(video_src):
                 cmd = ["ffmpeg", "-y", "-i", video_src, "-i", title_overlay,
@@ -539,7 +540,7 @@ def compose_listening_enhanced(
             intro_overlay = str(static_dir / "practice_intro_overlay.png")
             _render_practice_intro(intro_en, intro_zh, scene_img, intro_overlay)
             vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
-            vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,fps=24" if vid_dur > 0 and audio_dur > 0 else "fps=24"
+            vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,{_VF_NORM},fps=24" if vid_dur > 0 and audio_dur > 0 else f"{_VF_NORM},fps=24"
             out_dur = audio_dur + pad
             narration_audio = narration.get("practice_intro")
             if narration_audio and os.path.exists(narration_audio):
@@ -567,7 +568,7 @@ def compose_listening_enhanced(
             _render_practice_intro(outro_en, outro_zh, scene_img, outro_overlay)
             vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
             out_dur = audio_dur + pad
-            vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,fps=24" if vid_dur > 0 and audio_dur > 0 else "fps=24"
+            vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,{_VF_NORM},fps=24" if vid_dur > 0 and audio_dur > 0 else f"{_VF_NORM},fps=24"
             outro_audio = narration.get("outro")
             if outro_audio and os.path.exists(outro_audio):
                 cmd = ["ffmpeg", "-y", "-i", video_src, "-i", outro_audio, "-i", outro_overlay,
@@ -591,9 +592,9 @@ def compose_listening_enhanced(
             # Fallback: dialogue (non-grouped)
             vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
             if vid_dur > 0 and audio_dur > 0:
-                vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,fps=24"
+                vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,{_VF_NORM},fps=24"
             else:
-                vf = "fps=24"
+                vf = f"{_VF_NORM},fps=24"
             if audio_file and os.path.exists(audio_file):
                 cmd = ["ffmpeg", "-y", "-i", video_src, "-i", audio_file,
                        "-t", f"{duration:.3f}", "-vf", vf,
@@ -620,7 +621,7 @@ def compose_listening_enhanced(
             print(f"  FFmpeg error seg {seg_idx}: {r.stderr[-200:] if r else 'timeout'}")
             fb_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                       "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                      "-t", f"{duration:.3f}", "-vf", "fps=24",
+                      "-t", f"{duration:.3f}", "-vf", f"{_VF_NORM},fps=24",
                       "-map", "0:v:0", "-map", "1:a:0",
                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -682,10 +683,13 @@ def compose_listening_enhanced(
 
     if subtitle_entries:
         from PIL import Image, ImageDraw, ImageFont
-        w, h = 1280, 720
+        # Overlay size MUST match the actual video canvas — a mismatch crops
+        # subtitle text at the frame edges
+        w, h = _probe_resolution(no_sub)
         sub_overlay_dir = tmp_dir / "subtitles"
         sub_overlay_dir.mkdir(exist_ok=True)
 
+        BOTTOM_MARGIN = 36  # clear of the frame edge + YouTube player UI
         for i, entry in enumerate(subtitle_entries):
             overlay_path = str(sub_overlay_dir / f"sub_{i:03d}.png")
             bg = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -693,8 +697,7 @@ def compose_listening_enhanced(
             en_text = entry["en"]
             zh_text = entry["zh"]
 
-            en_y = 0
-            en_h = 0
+            en_font = en_w = en_h = None
             if en_text:
                 en_size = 50
                 en_font = ImageFont.truetype(FONT_EN, en_size)
@@ -705,12 +708,9 @@ def compose_listening_enhanced(
                     en_size -= 2
                     en_font = ImageFont.truetype(FONT_EN, en_size)
                 bbox = draw.textbbox((0, 0), en_text, font=en_font)
-                en_w = bbox[2] - bbox[0]
-                en_h = bbox[3] - bbox[1]
-                en_y = h - 140
-                draw.text(((w - en_w) // 2, en_y), en_text, font=en_font,
-                          fill=(255, 255, 255, 255), stroke_width=5, stroke_fill=(0, 0, 0, 255))
+                en_w, en_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
 
+            zh_font = zh_w = zh_h = None
             if zh_text:
                 zh_size = 50
                 zh_font = ImageFont.truetype(FONT_ZH, zh_size)
@@ -721,8 +721,23 @@ def compose_listening_enhanced(
                     zh_size -= 2
                     zh_font = ImageFont.truetype(FONT_ZH, zh_size)
                 bbox = draw.textbbox((0, 0), zh_text, font=zh_font)
-                zh_w = bbox[2] - bbox[0]
-                zh_y = en_y + en_h + 15 if en_text else h - 80
+                zh_w, zh_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+            # Stack bottom-up (ZH lowest, EN above) — never overflows the frame
+            if en_text and zh_text:
+                zh_y = h - BOTTOM_MARGIN - zh_h
+                en_y = zh_y - 15 - en_h
+            elif en_text:
+                en_y = h - BOTTOM_MARGIN - en_h
+                zh_y = 0
+            else:
+                en_y = 0
+                zh_y = h - BOTTOM_MARGIN - zh_h
+
+            if en_text and en_font is not None:
+                draw.text(((w - en_w) // 2, en_y), en_text, font=en_font,
+                          fill=(255, 255, 255, 255), stroke_width=5, stroke_fill=(0, 0, 0, 255))
+            if zh_text and zh_font is not None:
                 draw.text(((w - zh_w) // 2, zh_y), zh_text, font=zh_font,
                           fill=(255, 215, 0, 255), stroke_width=4, stroke_fill=(0, 0, 0, 255))
 

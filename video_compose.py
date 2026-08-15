@@ -33,6 +33,32 @@ else:
     if not _os.path.exists(FONT_PH):
         FONT_PH = FONT_EN
 
+# Target output resolution — EVERY segment is normalized to this size so the
+# concat (-c copy) never mixes resolutions. Mixed sizes make the base canvas
+# differ from the 1280x720 overlay PNGs, cropping subtitle text at the edges.
+TARGET_W, TARGET_H = 1280, 720
+_VF_NORM = (f"scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease,"
+            f"pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2")
+
+
+def _probe_resolution(video_path: str) -> tuple[int, int]:
+    """Get actual video stream resolution via ffprobe (fallback 1280x720).
+
+    Overlays are rendered at this size so they match the video canvas exactly.
+    """
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0",
+             str(video_path)], text=True).strip()
+        w_str, h_str = out.split("x")
+        w, h = int(w_str), int(h_str)
+        if w > 0 and h > 0:
+            return w, h
+    except Exception:
+        pass
+    return TARGET_W, TARGET_H
+
 
 def _get_duration(path: str) -> float:
     """Get media duration in seconds via ffprobe."""
@@ -440,9 +466,9 @@ def compose_listening(
                         # CORRECT: group_dur/vid_dur (>1 = slow down, <1 = speed up)
                         # e.g. clip=13s, audio=14.3s → 14.3/13=1.0898 → PTS stretched → slow down
                         # fps=24 then duplicates frames evenly throughout (no freeze)
-                        vf = f"setpts={group_dur/vid_dur:.4f}*PTS,fps=24"
+                        vf = f"setpts={group_dur/vid_dur:.4f}*PTS,{_VF_NORM},fps=24"
                     else:
-                        vf = "fps=24"
+                        vf = f"{_VF_NORM},fps=24"
                     cmd = ["ffmpeg", "-y", "-i", group_clip, "-i", group_audio,
                            "-t", f"{group_dur:.3f}", "-vf", vf,
                            "-map", "0:v:0", "-map", "1:a:0",
@@ -451,9 +477,10 @@ def compose_listening(
                            "-af", fade_af,
                            out_path]
                 else:
-                    cmd = ["ffmpeg", "-y", "-i", group_clip,
+                    # clip or audio missing — silent static segment keeps the timeline intact
+                    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                            "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                           "-t", f"{group_dur:.3f}", "-vf", "fps=24",
+                           "-t", f"{group_dur:.3f}", "-vf", f"{_VF_NORM},fps=24",
                            "-map", "0:v:0", "-map", "1:a:0",
                            "-c:v", "libx264", "-pix_fmt", "yuv420p",
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -468,7 +495,7 @@ def compose_listening(
                     # Fallback: silent segment with scene image to maintain timeline
                     fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                                    "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                                   "-t", f"{group_dur:.3f}", "-vf", "fps=24",
+                                   "-t", f"{group_dur:.3f}", "-vf", f"{_VF_NORM},fps=24",
                                    "-map", "0:v:0", "-map", "1:a:0",
                                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
                                    "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -547,11 +574,12 @@ def compose_listening(
 
         # --- Build FFmpeg command ---
         if is_static:
-            # Static image: loop image + audio
+            # Static image: loop image + audio (PNGs are already 1280x720;
+            # _VF_NORM is a no-op guard against future size mismatches)
             if audio_file and os.path.exists(audio_file):
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", video_src, "-i", audio_file,
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", _VF_NORM, "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
                        out_path]
@@ -559,7 +587,7 @@ def compose_listening(
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", video_src,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", _VF_NORM, "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        out_path]
 
@@ -570,7 +598,7 @@ def compose_listening(
             title_overlay = str(static_dir / "title_overlay.png")
             _render_title_card(title_en, title_zh, "", scene_img, title_overlay)
             vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
-            vf = f"setpts={duration/vid_dur:.4f}*PTS,fps=24" if vid_dur > 0 else "fps=24"
+            vf = f"setpts={duration/vid_dur:.4f}*PTS,{_VF_NORM},fps=24" if vid_dur > 0 else f"{_VF_NORM},fps=24"
             fade_af_title = f"afade=t=in:st=0:d=0.05,afade=t=out:st={max(0, duration-0.05):.2f}:d=0.05"
             if _has_audio(video_src):
                 cmd = ["ffmpeg", "-y", "-i", video_src, "-i", title_overlay,
@@ -598,7 +626,7 @@ def compose_listening(
             intro_overlay = str(static_dir / "practice_intro_overlay.png")
             _render_practice_intro(intro_en, intro_zh, scene_img, intro_overlay)
             vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
-            vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,fps=24" if vid_dur > 0 and audio_dur > 0 else "fps=24"
+            vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,{_VF_NORM},fps=24" if vid_dur > 0 and audio_dur > 0 else f"{_VF_NORM},fps=24"
             out_dur = audio_dur + pad
             fade_af_pi = f"afade=t=in:st=0:d=0.05,afade=t=out:st={max(0, audio_dur-0.05):.2f}:d=0.05"
             narration_audio = narration.get("practice_intro")
@@ -631,7 +659,7 @@ def compose_listening(
             _render_practice_intro(outro_en, outro_zh, scene_img, outro_overlay)
             vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
             out_dur = audio_dur + pad
-            vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,fps=24" if vid_dur > 0 and audio_dur > 0 else "fps=24"
+            vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,{_VF_NORM},fps=24" if vid_dur > 0 and audio_dur > 0 else f"{_VF_NORM},fps=24"
             fade_af_outro = f"afade=t=in:st=0:d=0.05,afade=t=out:st={max(0, audio_dur-0.05):.2f}:d=0.05"
             outro_audio = narration.get("outro")
             if outro_audio and os.path.exists(outro_audio):
@@ -660,9 +688,9 @@ def compose_listening(
             # 方案 B grouped dialogue is handled above; this is the non-grouped path.
             vid_dur = _get_duration(video_src) if os.path.exists(video_src) else 0
             if vid_dur > 0 and audio_dur > 0:
-                vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,fps=24"
+                vf = f"setpts={audio_dur/vid_dur:.4f}*PTS,{_VF_NORM},fps=24"
             else:
-                vf = "fps=24"
+                vf = f"{_VF_NORM},fps=24"
             if audio_file and os.path.exists(audio_file):
                 cmd = ["ffmpeg", "-y", "-i", video_src, "-i", audio_file,
                        "-t", f"{duration:.3f}", "-vf", vf,
@@ -690,7 +718,7 @@ def compose_listening(
             # Fallback: silent segment with scene image
             fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                            "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                           "-t", f"{duration:.3f}", "-vf", "fps=24",
+                           "-t", f"{duration:.3f}", "-vf", f"{_VF_NORM},fps=24",
                            "-map", "0:v:0", "-map", "1:a:0",
                            "-c:v", "libx264", "-pix_fmt", "yuv420p",
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -755,10 +783,13 @@ def compose_listening(
     # Render subtitle PNGs and overlay
     if subtitle_entries:
         from PIL import Image, ImageDraw, ImageFont
-        w, h = 1280, 720
+        # Overlay size MUST match the actual video canvas — a mismatch (images or
+        # clips at a different native size) crops subtitle text at the frame edges
+        w, h = _probe_resolution(no_sub)
         sub_overlay_dir = tmp_dir / "subtitles"
         sub_overlay_dir.mkdir(exist_ok=True)
 
+        BOTTOM_MARGIN = 36  # clear of the frame edge + YouTube player UI
         for i, entry in enumerate(subtitle_entries):
             overlay_path = str(sub_overlay_dir / f"sub_{i:03d}.png")
             bg = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -767,8 +798,7 @@ def compose_listening(
             en_text = entry["en"]
             zh_text = entry["zh"]
 
-            en_y = 0
-            en_h = 0
+            en_font = en_w = en_h = None
             if en_text:
                 en_size = 50
                 en_font = ImageFont.truetype(FONT_EN, en_size)
@@ -779,12 +809,9 @@ def compose_listening(
                     en_size -= 2
                     en_font = ImageFont.truetype(FONT_EN, en_size)
                 bbox = draw.textbbox((0, 0), en_text, font=en_font)
-                en_w = bbox[2]-bbox[0]
-                en_h = bbox[3]-bbox[1]
-                en_y = h - 140
-                draw.text(((w-en_w)//2, en_y), en_text, font=en_font,
-                          fill=(255, 255, 255, 255), stroke_width=5, stroke_fill=(0, 0, 0, 255))
+                en_w, en_h = bbox[2]-bbox[0], bbox[3]-bbox[1]
 
+            zh_font = zh_w = zh_h = None
             if zh_text:
                 zh_size = 50
                 zh_font = ImageFont.truetype(FONT_ZH, zh_size)
@@ -795,8 +822,24 @@ def compose_listening(
                     zh_size -= 2
                     zh_font = ImageFont.truetype(FONT_ZH, zh_size)
                 bbox = draw.textbbox((0, 0), zh_text, font=zh_font)
-                zh_w = bbox[2]-bbox[0]
-                zh_y = en_y + en_h + 15 if en_text else h - 80
+                zh_w, zh_h = bbox[2]-bbox[0], bbox[3]-bbox[1]
+
+            # Stack bottom-up (ZH lowest, EN above it) — guarantees text can
+            # never extend past the frame bottom regardless of font metrics
+            if en_text and zh_text:
+                zh_y = h - BOTTOM_MARGIN - zh_h
+                en_y = zh_y - 15 - en_h
+            elif en_text:
+                en_y = h - BOTTOM_MARGIN - en_h
+                zh_y = 0
+            else:
+                en_y = 0
+                zh_y = h - BOTTOM_MARGIN - zh_h
+
+            if en_text and en_font is not None:
+                draw.text(((w-en_w)//2, en_y), en_text, font=en_font,
+                          fill=(255, 255, 255, 255), stroke_width=5, stroke_fill=(0, 0, 0, 255))
+            if zh_text and zh_font is not None:
                 draw.text(((w-zh_w)//2, zh_y), zh_text, font=zh_font,
                           fill=(255, 215, 0, 255), stroke_width=4, stroke_fill=(0, 0, 0, 255))
 
@@ -1009,7 +1052,7 @@ def compose_static(
             if audio_file and os.path.exists(audio_file):
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", video_src, "-i", audio_file,
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", _VF_NORM, "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
                        out_path]
@@ -1017,12 +1060,14 @@ def compose_static(
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", video_src,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", _VF_NORM, "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        out_path]
 
         elif seg_type == "title_card":
             # Static scene image + title overlay (transparent PNG) + silence
+            # scene_img may be at frontier's native size — normalize before
+            # overlaying the 1280x720 title PNG, else text gets cropped
             title_en = seg.get("subtitle_en", "")
             title_zh = seg.get("subtitle_zh", "")
             title_overlay = str(static_dir / "title_overlay.png")
@@ -1031,7 +1076,7 @@ def compose_static(
                    "-i", title_overlay,
                    "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                    "-t", f"{duration:.3f}",
-                   "-filter_complex", "[0:v][1:v]overlay=0:0[v]",
+                   "-filter_complex", f"[0:v]{_VF_NORM}[bg];[bg][1:v]overlay=0:0[v]",
                    "-map", "[v]", "-map", "2:a",
                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
                    "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -1050,7 +1095,7 @@ def compose_static(
                        "-i", narration_audio, "-i", intro_overlay,
                        "-t", f"{out_dur:.3f}",
                        "-filter_complex",
-                       f"[0:v][2:v]overlay=0:0[v];"
+                       f"[0:v]{_VF_NORM}[bg];[bg][2:v]overlay=0:0[v];"
                        f"[1:a]afade=t=in:st=0:d=0.05,afade=t=out:st={max(0, audio_dur-0.05):.2f}:d=0.05,apad=whole_dur={out_dur:.3f}[a]",
                        "-map", "[v]", "-map", "[a]",
                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
@@ -1061,7 +1106,7 @@ def compose_static(
                        "-i", intro_overlay,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                        "-t", f"{out_dur:.3f}",
-                       "-filter_complex", "[0:v][1:v]overlay=0:0[v]",
+                       "-filter_complex", f"[0:v]{_VF_NORM}[bg];[bg][1:v]overlay=0:0[v]",
                        "-map", "[v]", "-map", "2:a",
                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -1080,7 +1125,7 @@ def compose_static(
                        "-i", outro_audio, "-i", outro_overlay,
                        "-t", f"{out_dur:.3f}",
                        "-filter_complex",
-                       f"[0:v][2:v]overlay=0:0[v];"
+                       f"[0:v]{_VF_NORM}[bg];[bg][2:v]overlay=0:0[v];"
                        f"[1:a]afade=t=in:st=0:d=0.05,afade=t=out:st={max(0, audio_dur-0.05):.2f}:d=0.05,apad=whole_dur={out_dur:.3f}[a]",
                        "-map", "[v]", "-map", "[a]",
                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
@@ -1091,7 +1136,7 @@ def compose_static(
                        "-i", outro_overlay,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                        "-t", f"{out_dur:.3f}",
-                       "-filter_complex", "[0:v][1:v]overlay=0:0[v]",
+                       "-filter_complex", f"[0:v]{_VF_NORM}[bg];[bg][1:v]overlay=0:0[v]",
                        "-map", "[v]", "-map", "2:a",
                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -1099,6 +1144,8 @@ def compose_static(
 
         else:
             # Dialogue (static image per line): per-line dialogue image + TTS audio
+            # dialogue_img_{i} comes at frontier's NATIVE resolution — must be
+            # normalized to the target canvas or subtitles overhang the frame
             idx = min(audio_idx, len(dialogue_images) - 1) if dialogue_images else 0
             d_img = dialogue_images[idx] if dialogue_images and idx < len(dialogue_images) else scene_img
             if not os.path.exists(d_img):
@@ -1107,7 +1154,7 @@ def compose_static(
             if audio_file and os.path.exists(audio_file):
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", d_img, "-i", audio_file,
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", _VF_NORM, "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
                        out_path]
@@ -1115,7 +1162,7 @@ def compose_static(
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", d_img,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", _VF_NORM, "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        out_path]
 
@@ -1130,7 +1177,7 @@ def compose_static(
             fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                            "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                            "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+                           "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", _VF_NORM, "-r", "24",
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                            out_path]
             try:
@@ -1191,10 +1238,13 @@ def compose_static(
     # Render subtitle PNGs and overlay
     if subtitle_entries:
         from PIL import Image, ImageDraw, ImageFont
-        w, h = 1280, 720
+        # Overlay size MUST match the actual video canvas — a mismatch (images or
+        # clips at a different native size) crops subtitle text at the frame edges
+        w, h = _probe_resolution(no_sub)
         sub_overlay_dir = tmp_dir / "subtitles"
         sub_overlay_dir.mkdir(exist_ok=True)
 
+        BOTTOM_MARGIN = 36  # clear of the frame edge + YouTube player UI
         for i, entry in enumerate(subtitle_entries):
             overlay_path = str(sub_overlay_dir / f"sub_{i:03d}.png")
             bg = Image.new("RGBA", (w, h), (0, 0, 0, 0))
@@ -1203,8 +1253,7 @@ def compose_static(
             en_text = entry["en"]
             zh_text = entry["zh"]
 
-            en_y = 0
-            en_h = 0
+            en_font = en_w = en_h = None
             if en_text:
                 en_size = 50
                 en_font = ImageFont.truetype(FONT_EN, en_size)
@@ -1215,12 +1264,9 @@ def compose_static(
                     en_size -= 2
                     en_font = ImageFont.truetype(FONT_EN, en_size)
                 bbox = draw.textbbox((0, 0), en_text, font=en_font)
-                en_w = bbox[2]-bbox[0]
-                en_h = bbox[3]-bbox[1]
-                en_y = h - 140
-                draw.text(((w-en_w)//2, en_y), en_text, font=en_font,
-                          fill=(255, 255, 255, 255), stroke_width=5, stroke_fill=(0, 0, 0, 255))
+                en_w, en_h = bbox[2]-bbox[0], bbox[3]-bbox[1]
 
+            zh_font = zh_w = zh_h = None
             if zh_text:
                 zh_size = 50
                 zh_font = ImageFont.truetype(FONT_ZH, zh_size)
@@ -1231,8 +1277,24 @@ def compose_static(
                     zh_size -= 2
                     zh_font = ImageFont.truetype(FONT_ZH, zh_size)
                 bbox = draw.textbbox((0, 0), zh_text, font=zh_font)
-                zh_w = bbox[2]-bbox[0]
-                zh_y = en_y + en_h + 15 if en_text else h - 80
+                zh_w, zh_h = bbox[2]-bbox[0], bbox[3]-bbox[1]
+
+            # Stack bottom-up (ZH lowest, EN above it) — guarantees text can
+            # never extend past the frame bottom regardless of font metrics
+            if en_text and zh_text:
+                zh_y = h - BOTTOM_MARGIN - zh_h
+                en_y = zh_y - 15 - en_h
+            elif en_text:
+                en_y = h - BOTTOM_MARGIN - en_h
+                zh_y = 0
+            else:
+                en_y = 0
+                zh_y = h - BOTTOM_MARGIN - zh_h
+
+            if en_text and en_font is not None:
+                draw.text(((w-en_w)//2, en_y), en_text, font=en_font,
+                          fill=(255, 255, 255, 255), stroke_width=5, stroke_fill=(0, 0, 0, 255))
+            if zh_text and zh_font is not None:
                 draw.text(((w-zh_w)//2, zh_y), zh_text, font=zh_font,
                           fill=(255, 215, 0, 255), stroke_width=4, stroke_fill=(0, 0, 0, 255))
 
