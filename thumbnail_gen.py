@@ -66,6 +66,8 @@ def _build_thumbnail_prompt(script: dict, structure: str) -> str:
 
     if structure == "enhanced":
         top_center = "沉浸式聽力動畫"
+    elif structure == "quest":
+        top_center = "慢速英文聽力"
     else:
         top_center = "沉浸式英文動畫"
 
@@ -230,7 +232,12 @@ def _pillow_fallback(script: dict, scene_img: str, output_path: str,
               cefr, font=bfont, fill=(255, 255, 255, 255))
 
     # Bottom bar
-    label = "Vocabulary + Quiz + Slow Speed + Shadowing" if structure == "enhanced" else "Listen + Repeat + Shadowing"
+    if structure == "enhanced":
+        label = "Vocabulary + Quiz + Slow Speed + Shadowing"
+    elif structure == "quest":
+        label = "Slow Listening + Answer Task"
+    else:
+        label = "Listen + Repeat + Shadowing"
     lfont = ImageFont.truetype(FONT_EN, 28)
     lb = draw.textbbox((0, 0), label, font=lfont)
     draw.text(((THUMB_W - (lb[2] - lb[0])) // 2, THUMB_H - 55),
@@ -269,6 +276,15 @@ def save_youtube_metadata(script: dict, timeline: list[dict],
                 timestamps["shadowing"] = t_cursor
             elif seg_type == "outro" and "outro" not in timestamps:
                 timestamps["outro"] = t_cursor
+        elif structure == "quest":
+            if seg_type == "title_card" and "title" not in timestamps:
+                timestamps["title"] = t_cursor
+            elif seg_type == "hook_intro" and "hook" not in timestamps:
+                timestamps["hook"] = t_cursor
+            elif seg_type == "dialogue" and "dialogue" not in timestamps:
+                timestamps["dialogue"] = t_cursor
+            elif seg_type == "outro" and "outro" not in timestamps:
+                timestamps["outro"] = t_cursor
         else:
             if seg_type == "title_card" and "title" not in timestamps:
                 timestamps["title"] = t_cursor
@@ -302,6 +318,15 @@ def save_youtube_metadata(script: dict, timeline: list[dict],
             chapters.append(f"{_fmt_ts(timestamps['shadowing'])} Shadowing Practice")
         if "outro" in timestamps:
             chapters.append(f"{_fmt_ts(timestamps['outro'])} Outro")
+    elif structure == "quest":
+        if "title" in timestamps:
+            chapters.append(f"{_fmt_ts(timestamps['title'])} Title")
+        if "hook" in timestamps:
+            chapters.append(f"{_fmt_ts(timestamps['hook'])} Intro · Listening Task")
+        if "dialogue" in timestamps:
+            chapters.append(f"{_fmt_ts(timestamps['dialogue'])} Slow Dialogue")
+        if "outro" in timestamps:
+            chapters.append(f"{_fmt_ts(timestamps['outro'])} Outro · Answer & CTA")
     else:
         if "title" in timestamps:
             chapters.append(f"{_fmt_ts(timestamps['title'])} Title Card")

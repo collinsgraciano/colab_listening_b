@@ -194,6 +194,9 @@ def _enrich_timeline(timeline: list[dict], tts, pad: float,
         elif seg_type == "practice_intro":
             pi_path = narration.get("practice_intro", "")
             ad = tts.get_duration(pi_path) if pi_path and os.path.exists(pi_path) else seg["duration"] - pad
+        elif seg_type == "hook_intro":
+            hk_path = narration.get("hook", "")
+            ad = tts.get_duration(hk_path) if hk_path and os.path.exists(hk_path) else seg["duration"] - pad
         elif seg_type == "outro":
             out_path = narration.get("outro", "")
             ad = tts.get_duration(out_path) if out_path and os.path.exists(out_path) else seg["duration"] - pad
@@ -208,7 +211,8 @@ def _enrich_timeline(timeline: list[dict], tts, pad: float,
 # Script generation
 # ---------------------------------------------------------------------------
 
-def _validate_script(script: dict, num_lines: int, enhanced: bool = False) -> tuple[bool, str]:
+def _validate_script(script: dict, num_lines: int, enhanced: bool = False,
+                     quest: bool = False) -> tuple[bool, str]:
     """Validate a generated script. Returns (is_valid, error_message)."""
     dialogue = script.get("dialogue", [])
     if len(dialogue) < num_lines:
@@ -230,16 +234,43 @@ def _validate_script(script: dict, num_lines: int, enhanced: bool = False) -> tu
         questions = script.get("comprehension_questions", [])
         if len(questions) < 1:
             return False, f"Comprehension questions count {len(questions)} < required 1"
+    if quest:
+        if not script.get("listening_question_en", "").strip():
+            return False, "Quest script has empty 'listening_question_en'"
+        if not script.get("hook_intro_en", "").strip():
+            return False, "Quest script has empty 'hook_intro_en'"
+        if not script.get("char_c_description", "").strip():
+            return False, "Quest script has empty 'char_c_description'"
+        phases = [line.get("phase", "") for line in dialogue]
+        for ph in ("buildup", "core", "review"):
+            if ph not in phases:
+                return False, f"Quest dialogue missing phase '{ph}'"
+        # Phase order must be contiguous: buildup -> core -> review
+        order = {"buildup": 0, "core": 1, "review": 2}
+        seq = [order.get(p, -1) for p in phases]
+        if any(b < a for a, b in zip(seq, seq[1:])):
+            return False, "Quest dialogue phases are out of order (must be buildup -> core -> review)"
+        for i, line in enumerate(dialogue):
+            speaker = line.get("speaker", "")
+            phase = line.get("phase", "")
+            if phase in ("buildup", "review") and speaker not in ("char_a", "char_b"):
+                return False, f"Dialogue line {i} ({phase}) speaker must be char_a/char_b, got '{speaker}'"
+            if phase == "core" and speaker not in ("char_a", "char_c"):
+                return False, f"Dialogue line {i} (core) speaker must be char_a/char_c, got '{speaker}'"
     return True, ""
 
 
 def _generate_script_with_retry(topic, cefr, lessons_dir, num_lines,
-                                enhanced=False, max_attempts=5) -> dict:
+                                enhanced=False, quest=False, max_attempts=5) -> dict:
     """Generate and validate script, retrying on failure."""
     for attempt in range(max_attempts):
         try:
             print(f"  [Script] Attempt {attempt+1}/{max_attempts}...")
-            if enhanced:
+            if quest:
+                from quest.llm_client_quest import generate_quest_script
+                script = generate_quest_script(topic, cefr, lessons_dir=lessons_dir,
+                                               num_lines=num_lines)
+            elif enhanced:
                 from enhanced.llm_client_enhanced import generate_listening_script_enhanced
                 script = generate_listening_script_enhanced(topic, cefr,
                                                              lessons_dir=lessons_dir,
@@ -247,7 +278,7 @@ def _generate_script_with_retry(topic, cefr, lessons_dir, num_lines,
             else:
                 script = generate_listening_script(topic, cefr, lessons_dir=lessons_dir,
                                                    num_lines=num_lines)
-            valid, msg = _validate_script(script, num_lines, enhanced=enhanced)
+            valid, msg = _validate_script(script, num_lines, enhanced=enhanced, quest=quest)
             if valid:
                 print(f"  [Script] Valid: {len(script['dialogue'])} lines")
                 return script
@@ -427,24 +458,37 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths, offset=0):
     print(f"  [Video] Clips for this batch: {total}/{len(video_tasks)}")
 
 
-def _generate_tts(script, dialogue, audio_dir, results, enhanced=False):
+def _generate_tts(script, dialogue, audio_dir, results, enhanced=False, quest=False):
     """Generate all TTS audio. Runs in a thread."""
     tts = TTSEngine()
     voice_map = build_voice_map(script)
 
     narration = {}
-    intro_text = script.get("story_hook", "")
-    outro_text = script.get("outro", "That's all for today. Keep practicing!")
-    practice_intro_text = script.get("practice_intro_en", "Now let's practice. Listen and repeat each sentence.")
+    if quest:
+        # Quest mode: narrator reads the hook (listening task) + outro (CTA).
+        # No story_hook narration, no practice_intro (no repetition chapter).
+        hook_text = script.get("hook_intro_en", "")
+        outro_text = script.get("outro", "That's all for today. Keep practicing!")
+        for name, text, rate in [("hook", hook_text, "-10%"), ("outro", outro_text, "-10%")]:
+            if text:
+                path = str(audio_dir / f"{name}.mp3")
+                dur = tts.synth_english(text, "af_sky", path, rate=rate)
+                narration[name] = path
+                print(f"  [TTS] {name}: {dur:.1f}s")
+    else:
+        intro_text = script.get("story_hook", "")
+        outro_text = script.get("outro", "That's all for today. Keep practicing!")
+        practice_intro_text = script.get("practice_intro_en", "Now let's practice. Listen and repeat each sentence.")
 
-    for name, text in [("intro", intro_text), ("outro", outro_text), ("practice_intro", practice_intro_text)]:
-        if text:
-            path = str(audio_dir / f"{name}.mp3")
-            dur = tts.synth_english(text, "af_sky", path, rate="+0%")
-            narration[name] = path
-            print(f"  [TTS] {name}: {dur:.1f}s")
+        for name, text in [("intro", intro_text), ("outro", outro_text), ("practice_intro", practice_intro_text)]:
+            if text:
+                path = str(audio_dir / f"{name}.mp3")
+                dur = tts.synth_english(text, "af_sky", path, rate="+0%")
+                narration[name] = path
+                print(f"  [TTS] {name}: {dur:.1f}s")
 
-    # Dialogue English (character voices, -15% slow)
+    # Dialogue English (character voices; quest: -25% extra slow for beginners)
+    dialogue_rate = "-25%" if quest else "-15%"
     normal_paths = []
     dialogue_durations = []
     for i, line in enumerate(dialogue):
@@ -452,24 +496,26 @@ def _generate_tts(script, dialogue, audio_dir, results, enhanced=False):
         speaker = line.get("speaker", "char_a")
         voice = voice_map.get(speaker, "af_sarah")
         path = str(audio_dir / f"dialogue_{i}.mp3")
-        dur = tts.synth_english(text, voice, path, rate="-15%")
+        dur = tts.synth_english(text, voice, path, rate=dialogue_rate)
         normal_paths.append(path)
         dialogue_durations.append(dur)
         print(f"  [TTS] dialogue_{i}: {dur:.1f}s ({voice})")
 
-    # Dialogue Chinese (edge-tts primary with retries, Kokoro fallback, -10% slow)
+    # Dialogue Chinese (quest skips entirely — no listen_zh chapter, bilingual
+    # translation is shown as burned subtitles instead)
     zh_paths = []
-    for i, line in enumerate(dialogue):
-        text = line.get("zh", "")
-        if not text:
-            zh_paths.append("")
-            continue
-        speaker = line.get("speaker", "char_a")
-        voice = get_zh_voice(speaker, script)
-        path = str(audio_dir / f"zh_{i}.mp3")
-        dur = tts.synth_chinese(text, voice, path, rate="-10%")
-        zh_paths.append(path)
-        print(f"  [TTS] zh_{i}: {dur:.1f}s")
+    if not quest:
+        for i, line in enumerate(dialogue):
+            text = line.get("zh", "")
+            if not text:
+                zh_paths.append("")
+                continue
+            speaker = line.get("speaker", "char_a")
+            voice = get_zh_voice(speaker, script)
+            path = str(audio_dir / f"zh_{i}.mp3")
+            dur = tts.synth_chinese(text, voice, path, rate="-10%")
+            zh_paths.append(path)
+            print(f"  [TTS] zh_{i}: {dur:.1f}s")
 
     # Enhanced: vocabulary + slow dialogue + quiz TTS
     vocab_paths = []
@@ -548,18 +594,18 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--output", default="./output", help="Output directory")
     parser.add_argument("--clip-duration", type=int, default=15, help="Video clip duration in seconds")
     parser.add_argument("--practice-duration", type=float, default=3.0, help="Silence duration in Ch3")
-    parser.add_argument("--pad", type=float, default=0.4, help="Audio pad between segments")
+    parser.add_argument("--pad", type=float, default=None, help="Audio pad between segments (default 0.4; quest mode 5.0 — long thinking pauses for beginners)")
     parser.add_argument("--lessons-dir", default=None, help="Lessons dir for anti-duplicate check")
     parser.add_argument("--topics-file", default=str(Path(__file__).parent / "topics.json"), help="Path to topics.json")
     parser.add_argument("--used-topics-file", default=None, help="Path to used_topics.json (default: <output>/used_topics.json — persists on Drive across Colab sessions)")
-    parser.add_argument("--num-lines", type=int, default=18, help="Number of dialogue lines (default 18)")
+    parser.add_argument("--num-lines", type=int, default=None, help="Number of dialogue lines (default: 18; quest mode: 48)")
     parser.add_argument("--mcp-tokens", default=None, help="TJGenerators MCP OAuth tokens, comma-separated for multi-token rotation")
     parser.add_argument("--mcp-token", default=None, help="(Deprecated) Single MCP token. Use --mcp-tokens instead.")
     parser.add_argument("--api-key", default=None, help="SenseNova API key (or set SENSENOVA_API_KEY env var)")
     parser.add_argument("--model", default=None, choices=["deepseek-v4-flash", "glm-5.2"],
                         help="SenseNova LLM model: 'deepseek-v4-flash' (default) or 'glm-5.2'")
-    parser.add_argument("--structure", default="original", choices=["original", "enhanced", "static"],
-                        help="Video structure: 'original' (4-chapter, video clips), 'enhanced' (7-chapter with vocab+quiz+slow), or 'static' (all images, no video generation)")
+    parser.add_argument("--structure", default="original", choices=["original", "enhanced", "static", "quest"],
+                        help="Video structure: 'original' (4-chapter, video clips), 'enhanced' (7-chapter with vocab+quiz+slow), 'static' (all images, no video generation), or 'quest' (task-hook slow listening, all images, 3-phase dialogue)")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
     parser.add_argument("--no-4k", dest="no_4k", action="store_true", help="Skip the final 4K upscaling step")
     parser.add_argument("--upscale-timeout", type=int, default=3600, help="Timeout in seconds for 4K upscale (default 3600)")
@@ -626,7 +672,9 @@ def _step0_script(args, checkpoint: dict, topic: str, parent_dir: Path,
         mark_topic_used(used_topics_file, topic)  # idempotent re-mark on resume
     else:
         script = _generate_script_with_retry(topic, args.cefr, args.lessons_dir,
-                                             args.num_lines, enhanced=(args.structure == "enhanced"))
+                                             args.num_lines,
+                                             enhanced=(args.structure == "enhanced"),
+                                             quest=(args.structure == "quest"))
         # After script generation, create a subfolder named by YouTube title
         yt_title = script.get("youtube_title", script.get("title", topic))
         safe_title = _safe_dirname(yt_title, topic)
@@ -678,6 +726,7 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
     n = len(dialogue)
     is_enhanced = (args.structure == "enhanced")
     is_static = (args.structure == "static")
+    is_quest = (args.structure == "quest")
     img_dir, audio_dir, clips_dir = dirs["images"], dirs["audio"], dirs["clips"]
 
     char_a_desc = script.get("char_a_description", "friendly young man")
@@ -690,25 +739,40 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         (f"Character design sheet, {char_a_desc} on the left, {char_b_desc} on the right, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_scene.png"),
         (f"Scene background, {scene}, wide shot, showing all key elements of the scene, 3D cartoon style, no characters, no text, 16:9", "scene.png"),
     ]
+    if is_quest:
+        # Third character (staff/interviewer) paired with char_a for core-phase lines
+        char_c_desc = script.get("char_c_description", "friendly staff member")
+        image_prompts.append(
+            (f"Character design sheet, {char_a_desc} on the left, {char_c_desc} on the right, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_scene_c.png"))
 
     # Check if Step 2 already completed (images + audio exist)
     step2_done = _step_done(checkpoint, "step2_images_tts")
     char_scene_file = img_dir / "char_scene.png"
     scene_file = img_dir / "scene.png"
+    char_scene_c_file = img_dir / "char_scene_c.png"
     all_audio_exist = all((audio_dir / f"dialogue_{i}.mp3").exists() for i in range(n))
-    all_zh_exist = all((audio_dir / f"zh_{i}.mp3").exists() for i in range(n))
-    narration_files = ["intro.mp3", "outro.mp3", "practice_intro.mp3"]
+    # Quest mode has NO Chinese TTS (translation shown as burned subtitles only)
+    if is_quest:
+        all_zh_exist = True
+    else:
+        all_zh_exist = all((audio_dir / f"zh_{i}.mp3").exists() for i in range(n))
+    narration_files = (["hook.mp3", "outro.mp3"] if is_quest
+                       else ["intro.mp3", "outro.mp3", "practice_intro.mp3"])
     narration_exist = all((audio_dir / f).exists() for f in narration_files)
-    # Static mode: also check per-line dialogue images
-    all_dialogue_imgs_exist = (not is_static) or all(
+    # Static/quest modes: also check per-line dialogue images
+    all_dialogue_imgs_exist = (not (is_static or is_quest)) or all(
         (img_dir / f"dialogue_img_{i}.png").exists() for i in range(n))
+    quest_imgs_ok = (not is_quest) or char_scene_c_file.exists()
 
     tts_thread = None
-    if step2_done and char_scene_file.exists() and scene_file.exists() and all_audio_exist and all_zh_exist and narration_exist and all_dialogue_imgs_exist:
+    if step2_done and char_scene_file.exists() and scene_file.exists() and quest_imgs_ok and all_audio_exist and all_zh_exist and narration_exist and all_dialogue_imgs_exist:
         print("  [Resume] Step 2 already done, loading existing images + audio...")
         # Re-upload images to get CDN URLs (needed for video generation)
+        reupload_files = ["char_scene.png", "scene.png"]
+        if is_quest:
+            reupload_files.append("char_scene_c.png")
         image_urls = {}
-        for _, filename in [("a", "char_scene.png"), ("b", "scene.png")]:
+        for filename in reupload_files:
             filepath = str(img_dir / filename)
             print(f"  [Image] Re-uploading {filename} for CDN URL...")
             try:
@@ -726,10 +790,14 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
                 print(f"    [Image] Re-upload failed: {e}")
 
         normal_paths = [str(audio_dir / f"dialogue_{i}.mp3") for i in range(n)]
-        zh_paths = [str(audio_dir / f"zh_{i}.mp3") for i in range(n)]
+        if is_quest:
+            zh_paths = [""] * n  # quest: no Chinese TTS
+        else:
+            zh_paths = [str(audio_dir / f"zh_{i}.mp3") for i in range(n)]
         dialogue_durations = [_get_audio_duration(p) for p in normal_paths]
         narration = {}
-        for name in ["intro", "outro", "practice_intro"]:
+        for name in (["hook", "outro"] if is_quest
+                     else ["intro", "outro", "practice_intro"]):
             narration[name] = str(audio_dir / f"{name}.mp3")
         tts_results = {
             "narration": narration,
@@ -755,7 +823,8 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
 
         def _tts_worker():
             try:
-                _generate_tts(script, dialogue, audio_dir, tts_results, is_enhanced)
+                _generate_tts(script, dialogue, audio_dir, tts_results, is_enhanced,
+                              quest=is_quest)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -802,16 +871,24 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
             tts_thread.join(timeout=5)
             sys.exit(1)
 
-        # Static mode: generate one dialogue image per line (no video clips)
-        if is_static:
+        # Static/quest modes: generate one dialogue image per line (no video clips)
+        if is_static or is_quest:
             char_scene_cdn = image_urls.get("char_scene.png", "")
-            print(f"  [Image] Generating {n} dialogue line images (static mode)...")
+            char_scene_c_cdn = image_urls.get("char_scene_c.png", "")
+            mode_label = "static" if is_static else "quest"
+            print(f"  [Image] Generating {n} dialogue line images ({mode_label} mode)...")
             for i, line in enumerate(dialogue):
                 d_img_path = str(img_dir / f"dialogue_img_{i}.png")
                 if os.path.exists(d_img_path):
                     print(f"    [Image] dialogue_img_{i} already exists, skipping")
                     continue
                 img_prompt = line.get("image_prompt", f"{char_a_desc} and {char_b_desc} at {scene}, 3D cartoon style, 16:9")
+                # Quest: core-phase lines feature char_a + char_c -> use the
+                # char_a+char_c design sheet as reference for visual consistency
+                if is_quest and line.get("phase") == "core" and char_scene_c_cdn:
+                    ref_cdn = char_scene_c_cdn
+                else:
+                    ref_cdn = char_scene_cdn
                 print(f"    [Image] Generating dialogue_img_{i}/{n}...")
                 try:
                     gen_params = {
@@ -821,8 +898,8 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
                         "image_size": "landscape_16_9",
                         "output_format": "png",
                     }
-                    if char_scene_cdn:
-                        gen_params["image_urls"] = char_scene_cdn
+                    if ref_cdn:
+                        gen_params["image_urls"] = ref_cdn
                     result = call_tool("generate_image", gen_params)
                     task_id = parse_task_id(result)
                     data = poll_task(task_id, interval=10, max_wait=600)
@@ -851,10 +928,10 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
     scene_clip_task = None
     scene_clip_thread = None
 
-    if is_static:
-        # Static mode: no video clips at all — all segments use static images
+    if is_static or is_quest:
+        # Static/quest modes: no video clips at all — all segments use static images
         clip_paths = []
-        print("  [Static] Skipping clip_0 generation (static mode — no video clips)")
+        print(f"  [{ 'Static' if is_static else 'Quest' }] Skipping clip_0 generation (no video clips)")
     else:
         scene_clip_task = _build_scene_clip_task(scene, scene_url)
         clip0_path = str(clips_dir / "clip_0.mp4")
@@ -985,9 +1062,9 @@ def _step3_clips(args, checkpoint: dict, work_dir: Path, dirs: dict, script: dic
     dialogue_durations = tts_results.get("dialogue_durations", [])
     audio_dir, clips_dir = dirs["audio"], dirs["clips"]
 
-    if args.structure == "static":
-        # Static mode: no video clips, no grouping — all segments use static images
-        print("Step 3: Skipped (static mode — no video generation)")
+    if args.structure in ("static", "quest"):
+        # Static/quest modes: no video clips, no grouping — all segments use static images
+        print(f"Step 3: Skipped ({args.structure} mode — no video generation)")
         _save_checkpoint(work_dir, "step3_video")
         print(f"  TTS: {len(normal_paths)} EN + {sum(1 for p in zh_paths if p)} ZH")
         return [], [], {}
@@ -1088,6 +1165,11 @@ def _step4_timeline(args, checkpoint: dict, script: dict, work_dir: Path,
                          vocab_durations=vocab_durations, quiz_durations=quiz_durations,
                          slow_durations=slow_durations)
         srt = build_srt_from_timeline_enhanced(timeline, gap=0.0)
+    elif args.structure == "quest":
+        from quest.timeline_quest import build_quest_timeline, build_srt_from_timeline_quest
+        timeline = build_quest_timeline(script, dialogue_durations, pad=args.pad)
+        _enrich_timeline(timeline, tts, args.pad, dialogue_durations, zh_paths, narration)
+        srt = build_srt_from_timeline_quest(timeline, gap=0.0)
     else:
         timeline = build_listening_timeline(
             script, dialogue_durations,
@@ -1198,6 +1280,22 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             group_info=group_info,
             line_to_group=line_to_group,
         )
+    elif args.structure == "quest":
+        from quest.video_compose_quest import compose_quest
+        n = len(script.get("dialogue", []))
+        dialogue_images = [str(dirs["images"] / f"dialogue_img_{i}.png") for i in range(n)]
+        final_path = compose_quest(
+            work_dir=str(work_dir),
+            dialogue_images=dialogue_images,
+            timeline=timeline,
+            script=script,
+            narration=narration,
+            normal_paths=normal_paths,
+            scene_img=scene_img,
+            srt_dir=str(sub_dir),
+            pad=args.pad,
+            progress_cb=progress_cb,
+        )
     elif args.structure == "static":
         from video_compose import compose_static
         n = len(script.get("dialogue", []))
@@ -1284,6 +1382,13 @@ def _step6_4k(args, checkpoint: dict, work_dir: Path, final_path: str,
 
 def main():
     args = _parse_args()
+
+    # Per-structure defaults (explicit CLI values win)
+    if args.num_lines is None:
+        args.num_lines = 48 if args.structure == "quest" else 18
+    if args.pad is None:
+        # quest: long inter-line pause = processing time for A1-A2 beginners
+        args.pad = 5.0 if args.structure == "quest" else 0.4
 
     # Set API key / model from args if provided
     if args.api_key:

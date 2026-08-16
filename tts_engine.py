@@ -398,6 +398,10 @@ def build_voice_map(script: dict) -> dict:
     char_b_gender = script.get("char_b_gender", "female").lower()
     voice_map["char_a"] = "am_adam" if char_a_gender == "male" else "af_sarah"
     voice_map["char_b"] = "am_adam" if char_b_gender == "male" else "af_sarah"
+    # Quest mode third character (staff/interviewer) — only present in quest scripts
+    char_c_gender = script.get("char_c_gender", "").lower()
+    if char_c_gender:
+        voice_map["char_c"] = "am_adam" if char_c_gender == "male" else "af_sarah"
     return voice_map
 
 

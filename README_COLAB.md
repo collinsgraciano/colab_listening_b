@@ -30,13 +30,16 @@ colab_listening_b/
 ├── topic_manager.py              # 随机选题 + 防重复
 ├── topics.json                   # 选题库（23 类 247 个主题）
 ├── pipeline.py                   # 主入口（checkpoint 断点续传）
-└── enhanced/                     # enhanced 7 章节结构（词汇预习+慢速重听+理解题）
+├── enhanced/                     # enhanced 7 章节结构（词汇预习+慢速重听+理解题）
+└── quest/                        # quest 任务钩子慢速听力结构（全图片，任意场景）
 ```
 
-## 两种视频结构
+## 四种视频结构
 
 - **original**（4 章节）：标题卡 → 沉浸式情境對話 → 跟讀練習（1EN×3→ZH→1EN→sil ×9 段/行）→ Outro
 - **enhanced**（7 章节，基于 Underwood 三阶段听力教学法）：词汇预习 6 词 → 标题卡 → 沉浸式對話 → 慢速重聽（atempo=0.75）→ 理解檢查 3 題 → 跟讀（1EN×2→ZH→1EN→sil ×7 段/行）→ Outro
+- **static**（original 结构的全图片版）：不生成 Seedance 视频，逐行 frontier 图片 + TTS，最省积分
+- **quest**（任务钩子慢速听力，全图片版，结构可复制到任意场景）：标题卡 → 旁白钩子（"我会说得很慢"+ 布置听力任务，答案在影片里）→ 三幕慢速對話（buildup 需求铺垫 char_a+char_b → core 核心实战 char_a+char_c 服务人员 → review 评价复盘 char_a+char_b）→ 旁白闭环 CTA（重复问题 + 评论区用英文作答 + 订阅）。A1-A2 句长≤10 词、目标词重复≥3 次、语速 -25%、段间停顿 5s。**无跟读/词汇/测验章节**。默认 48 行（约 9-11 分钟）；换任何 topic（机场登机、酒店入住、职场面试…）结构不变。
 
 ## 使用方法
 
@@ -73,8 +76,9 @@ print(token)
 |------|------|
 | `--topic` | 指定主题（缺省从 topics.json 随机） |
 | `--cefr` | A1-C2（默认 A2） |
-| `--num-lines` | 对话行数（默认 18） |
-| `--structure` | `original` / `enhanced` |
+| `--num-lines` | 对话行数（默认：quest 48 / 其他 18） |
+| `--pad` | 段间停顿秒数（默认：quest 5.0 / 其他 0.4） |
+| `--structure` | `original` / `enhanced` / `static` / `quest` |
 | `--mcp-tokens` | 多 token 逗号分隔 |
 | `--resume` | 断点续传 |
 | `--no-4k` | 跳过 4K 升采样 |
