@@ -872,19 +872,20 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
             sys.exit(1)
 
         # Static/quest modes: generate one dialogue image per line (no video clips)
+        # Concurrency: 5 images generated in parallel (ThreadPoolExecutor)
         if is_static or is_quest:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
             char_scene_cdn = image_urls.get("char_scene.png", "")
             char_scene_c_cdn = image_urls.get("char_scene_c.png", "")
             mode_label = "static" if is_static else "quest"
-            print(f"  [Image] Generating {n} dialogue line images ({mode_label} mode)...")
-            for i, line in enumerate(dialogue):
+            print(f"  [Image] Generating {n} dialogue line images ({mode_label} mode, 5 concurrent)...")
+
+            def _gen_one_dialogue_img(i, line):
                 d_img_path = str(img_dir / f"dialogue_img_{i}.png")
                 if os.path.exists(d_img_path):
                     print(f"    [Image] dialogue_img_{i} already exists, skipping")
-                    continue
+                    return i, True
                 img_prompt = line.get("image_prompt", f"{char_a_desc} and {char_b_desc} at {scene}, 3D cartoon style, 16:9")
-                # Quest: core-phase lines feature char_a + char_c -> use the
-                # char_a+char_c design sheet as reference for visual consistency
                 if is_quest and line.get("phase") == "core" and char_scene_c_cdn:
                     ref_cdn = char_scene_c_cdn
                 else:
@@ -907,16 +908,25 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
                     if url:
                         download_file(url, d_img_path)
                         print(f"      [Image] Downloaded: dialogue_img_{i}.png")
-                    else:
-                        print(f"      [Image] WARNING: No URL for dialogue_img_{i}, will use scene image as fallback")
+                        return i, True
+                    print(f"      [Image] WARNING: No URL for dialogue_img_{i}, will use scene image as fallback")
+                    return i, False
                 except RuntimeError as e:
                     if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
                         print("\n  [FATAL] 所有 MCP Token 积分已耗尽！请充值后重新运行（--resume）继续。")
                         tts_thread.join(timeout=5)
                         sys.exit(1)
                     print(f"      [Image] ERROR generating dialogue_img_{i}: {e}")
+                    return i, False
                 except Exception as e:
                     print(f"      [Image] ERROR generating dialogue_img_{i}: {e}")
+                    return i, False
+
+            with ThreadPoolExecutor(max_workers=5) as pool:
+                futs = [pool.submit(_gen_one_dialogue_img, i, line)
+                        for i, line in enumerate(dialogue)]
+                for fut in as_completed(futs):
+                    fut.result()
 
         print("  [Image] All images done. Waiting for TTS...")
 
