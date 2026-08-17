@@ -39,6 +39,7 @@ from timeline import build_listening_timeline, build_srt_from_timeline
 from video_compose import compose_listening
 from grouping_b import build_dialogue_groups, merge_group_prompt
 from topic_manager import pick_random_topic, mark_topic_used
+from media_utils import get_duration as _get_audio_duration, safe_filename as _safe_dirname
 
 
 # ---------------------------------------------------------------------------
@@ -107,16 +108,6 @@ def _step_done(checkpoint: dict, step: str) -> bool:
 # Small pure helpers (unit-testable, no I/O)
 # ---------------------------------------------------------------------------
 
-def _safe_dirname(yt_title: str, fallback: str) -> str:
-    """Sanitize a YouTube title into a filesystem-safe directory/file name."""
-    name = re.sub(r'[\U0001F000-\U0001FFFF]', '', yt_title)  # remove emoji
-    name = re.sub(r'[\\/:*?"<>|]', '', name).strip()
-    name = re.sub(r'\s+', '_', name)[:80]  # limit length
-    if not name:
-        name = re.sub(r'[^\w\s-]', '', fallback).strip().replace(' ', '_')
-    return name or "final_video"
-
-
 def _build_scene_clip_task(scene: str, scene_url: str) -> dict:
     """Build the clip_0 scene establishing-pan task (pure function)."""
     return {
@@ -168,23 +159,33 @@ def _enrich_timeline(timeline: list[dict], tts, pad: float,
     types (vocab/quiz/dialogue_slow) are ignored when their durations are None.
     Mutates the timeline in place.
     """
+    def _safe_index(durs, idx, default):
+        return durs[idx] if durs and idx < len(durs) else default
+
+    def _narration_dur(key, fallback):
+        path = narration.get(key, "")
+        return tts.get_duration(path) if path and os.path.exists(path) else fallback
+
+    # seg_type -> (audio_dur_resolver, set_duration_to_audio_dur)
+    # If set_duration_to_audio_dur is False, the seg's duration is set directly
+    # and audio_dur is set without adding pad.
     for seg in timeline:
         seg_type = seg.get("type", "")
         audio_idx = seg.get("audio_index", 0)
 
         if seg_type == "vocab":
-            ad = vocab_durations[audio_idx] if vocab_durations and audio_idx < len(vocab_durations) else 4.0
+            ad = _safe_index(vocab_durations, audio_idx, 4.0)
         elif seg_type == "quiz":
-            ad = quiz_durations[audio_idx] if quiz_durations and audio_idx < len(quiz_durations) else 6.0
+            ad = _safe_index(quiz_durations, audio_idx, 6.0)
         elif seg_type == "dialogue_slow":
-            ad = slow_durations[audio_idx] if slow_durations and audio_idx < len(slow_durations) else 4.0
+            ad = _safe_index(slow_durations, audio_idx, 4.0)
         elif seg_type in ("dialogue", "listen_en"):
-            ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
+            ad = _safe_index(dialogue_durations, audio_idx, 3.0)
         elif seg_type == "listen_zh":
             if audio_idx < len(zh_paths) and zh_paths[audio_idx]:
                 ad = tts.get_duration(zh_paths[audio_idx])
             else:
-                ad = dialogue_durations[audio_idx] if audio_idx < len(dialogue_durations) else 3.0
+                ad = _safe_index(dialogue_durations, audio_idx, 3.0)
         elif seg_type == "practice":
             seg["audio_dur"] = 0
             continue
@@ -192,14 +193,11 @@ def _enrich_timeline(timeline: list[dict], tts, pad: float,
             seg["audio_dur"] = seg["duration"]
             continue
         elif seg_type == "practice_intro":
-            pi_path = narration.get("practice_intro", "")
-            ad = tts.get_duration(pi_path) if pi_path and os.path.exists(pi_path) else seg["duration"] - pad
+            ad = _narration_dur("practice_intro", seg["duration"] - pad)
         elif seg_type == "hook_intro":
-            hk_path = narration.get("hook", "")
-            ad = tts.get_duration(hk_path) if hk_path and os.path.exists(hk_path) else seg["duration"] - pad
+            ad = _narration_dur("hook", seg["duration"] - pad)
         elif seg_type == "outro":
-            out_path = narration.get("outro", "")
-            ad = tts.get_duration(out_path) if out_path and os.path.exists(out_path) else seg["duration"] - pad
+            ad = _narration_dur("outro", seg["duration"] - pad)
         else:
             continue
 
@@ -294,83 +292,104 @@ def _generate_script_with_retry(topic, cefr, lessons_dir, num_lines,
 # Media helpers
 # ---------------------------------------------------------------------------
 
-def _get_audio_duration(path: str) -> float:
-    """Get audio duration via ffprobe."""
-    try:
-        return float(subprocess.check_output(
-            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-             "-of", "csv=p=0", path], text=True).strip())
-    except Exception:
-        return 0.0
-
-
 def _file_ok(path: str, min_size: int) -> bool:
     """Check a file exists and is larger than min_size (guards partial downloads)."""
     return bool(path) and os.path.exists(path) and os.path.getsize(path) > min_size
 
 
-def _generate_video_clips(video_tasks, clips_dir, clip_paths, offset=0):
-    """Generate video clips in batches. Runs in a thread.
-    Each task has its own 'duration' (dynamic per-group, not fixed).
-    clip_paths[offset + i] corresponds to video_tasks[i]; entries already set
-    (per-clip resume) are skipped so no credits are re-spent.
+def _create_and_poll_clip(task, clips_dir, idx, total):
+    """Create a single video task, poll it, and download the result.
+
+    Returns the local path on success, or None on failure.
     """
-    batch_size = 12
+    print(f"  [Video] Creating task {idx+1}/{total}: {task['filename']}...")
+    try:
+        result = call_tool("generate_video", {
+            "mode": "reference_image",
+            "image_urls": task["image_urls"],
+            "prompt": task["prompt"],
+            "duration": task["duration"],
+            "ratio": "16:9",
+            "resolution": "720p",
+            "generate_audio": task.get("generate_audio", False),
+        })
+        task_id = parse_task_id(result)
+        if not task_id:
+            print(f"    [Video] WARNING: no task_id for {task['filename']}")
+            if result and "result" in result:
+                print(f"    [Video] API response content: {json.dumps(result['result'].get('content', []), ensure_ascii=False)[:1000]}")
+            elif result:
+                print(f"    [Video] Full API response: {json.dumps(result, ensure_ascii=False)[:1000]}")
+            return None
+    except Exception as e:
+        print(f"    [Video] ERROR creating task: {e}")
+        return None
 
-    for batch_start in range(0, len(video_tasks), batch_size):
-        batch = video_tasks[batch_start:batch_start + batch_size]
-        task_ids = []
+    print(f"  [Video] Polling: {task['filename']}...")
+    data = poll_task(task_id, interval=40)
+    url = data.get("url", "")
+    if url:
+        dest = str(clips_dir / task["filename"])
+        if download_file(url, dest) and _file_ok(dest, 500000):
+            clip_paths_val = dest
+            print(f"    [Video] Downloaded: {task['filename']} ({os.path.getsize(dest)//1024}KB)")
+            return dest
+        else:
+            print(f"    [Video] WARNING: File too small or download failed, re-downloading...")
+            if download_file(url, dest) and _file_ok(dest, 500000):
+                return dest
+            else:
+                print(f"    [Video] ERROR: Downloaded file still too small/missing")
+                return None
+    else:
+        print(f"    [Video] ERROR: No video URL. Status={data.get('status')}")
+        raw_json = data.get("raw_json", "")
+        raw_text = data.get("raw_text", "")
+        error_msg = data.get("error", "")
+        if error_msg:
+            print(f"    [Video] Error message: {error_msg}")
+        if raw_json:
+            print(f"    [Video] Raw resource JSON: {raw_json[:1000]}")
+        if raw_text and not raw_json:
+            print(f"    [Video] Raw text block: {raw_text[:1000]}")
+        return None
 
-        for j, task in enumerate(batch):
-            idx = offset + batch_start + j
-            if clip_paths[idx] is not None:
-                continue  # already downloaded (per-clip resume)
-            print(f"  [Video] Creating task {idx+1}/{len(video_tasks)}: {task['filename']}...")
-            try:
-                result = call_tool("generate_video", {
-                    "mode": "reference_image",
-                    "image_urls": task["image_urls"],
-                    "prompt": task["prompt"],
-                    "duration": task["duration"],
-                    "ratio": "16:9",
-                    "resolution": "720p",
-                    "generate_audio": task.get("generate_audio", False),
-                })
-                task_id = parse_task_id(result)
-                if not task_id:
-                    print(f"    [Video] WARNING: no task_id for {task['filename']}")
-                    if result and "result" in result:
-                        print(f"    [Video] API response content: {json.dumps(result['result'].get('content', []), ensure_ascii=False)[:1000]}")
-                    elif result:
-                        print(f"    [Video] Full API response: {json.dumps(result, ensure_ascii=False)[:1000]}")
-                task_ids.append((idx, task_id, task["filename"]))
-            except Exception as e:
-                print(f"    [Video] ERROR creating task: {e}")
-                task_ids.append((idx, "", task["filename"]))
-            if j < len(batch) - 1:
-                time.sleep(5)
 
-        for idx, task_id, filename in task_ids:
+def _retry_clip(task, clips_dir, idx, max_retries=5):
+    """Retry a single failed clip by creating brand-new video tasks.
+
+    Each retry creates a completely new generate_video request (not re-querying
+    the old task_id). Returns the local path on success, or None after exhausting retries.
+    """
+    for attempt in range(1, max_retries + 1):
+        print(f"  [Video] Retrying clip {idx+1} ({task['filename']}) attempt {attempt}/{max_retries}...")
+        try:
+            result = call_tool("generate_video", {
+                "mode": "reference_image",
+                "image_urls": task["image_urls"],
+                "prompt": task["prompt"],
+                "duration": task["duration"],
+                "ratio": "16:9",
+                "resolution": "720p",
+                "generate_audio": task.get("generate_audio", False),
+            })
+            task_id = parse_task_id(result)
             if not task_id:
+                print(f"    [Video] FAILED: could not create task (parse_task_id returned empty)")
+                if result and "result" in result:
+                    raw_content = json.dumps(result["result"].get("content", []), ensure_ascii=False)[:1500]
+                    print(f"    [Video] API response content: {raw_content}")
+                elif result:
+                    print(f"    [Video] Full API response: {json.dumps(result, ensure_ascii=False)[:1500]}")
+                time.sleep(10)
                 continue
-            print(f"  [Video] Polling: {filename}...")
             data = poll_task(task_id, interval=40)
             url = data.get("url", "")
-            if url:
-                dest = str(clips_dir / filename)
-                if download_file(url, dest) and _file_ok(dest, 500000):
-                    clip_paths[idx] = dest
-                    print(f"    [Video] Downloaded: {filename} ({os.path.getsize(dest)//1024}KB)")
-                else:
-                    print(f"    [Video] WARNING: File too small or download failed, re-downloading...")
-                    if download_file(url, dest) and _file_ok(dest, 500000):
-                        clip_paths[idx] = dest
-                    else:
-                        print(f"    [Video] ERROR: Downloaded file still too small/missing")
-            else:
-                print(f"    [Video] ERROR: No video URL. Status={data.get('status')}")
+            if not url:
+                print(f"    [Video] FAILED: task {task_id[:16]}... returned no URL. Status={data.get('status')}")
                 raw_json = data.get("raw_json", "")
                 raw_text = data.get("raw_text", "")
+                raw_response = data.get("raw_response", "")
                 error_msg = data.get("error", "")
                 if error_msg:
                     print(f"    [Video] Error message: {error_msg}")
@@ -378,84 +397,60 @@ def _generate_video_clips(video_tasks, clips_dir, clip_paths, offset=0):
                     print(f"    [Video] Raw resource JSON: {raw_json[:1000]}")
                 if raw_text and not raw_json:
                     print(f"    [Video] Raw text block: {raw_text[:1000]}")
-
-    # Retry failed clips one by one — each retry creates a BRAND NEW video task
-    MAX_RETRY = 5
-    failed = [offset + i for i in range(len(video_tasks)) if clip_paths[offset + i] is None]
-    for idx in failed:
-        task = video_tasks[idx - offset]
-        attempt = 0
-        while attempt < MAX_RETRY:
-            attempt += 1
-            print(f"  [Video] Retrying clip {idx+1} ({task['filename']}) attempt {attempt}/{MAX_RETRY}...")
-            try:
-                # 1. Create a NEW video generation request (not re-querying old one)
-                result = call_tool("generate_video", {
-                    "mode": "reference_image",
-                    "image_urls": task["image_urls"],
-                    "prompt": task["prompt"],
-                    "duration": task["duration"],
-                    "ratio": "16:9",
-                    "resolution": "720p",
-                    "generate_audio": task.get("generate_audio", False),
-                })
-                # 2. Extract task_id — if empty, the request itself failed
-                task_id = parse_task_id(result)
-                if not task_id:
-                    print(f"    [Video] FAILED: could not create task (parse_task_id returned empty)")
-                    print(f"    [Video] Request params:")
-                    print(f"      mode: reference_image")
-                    print(f"      image_urls: {task['image_urls'][:120]}...")
-                    print(f"      prompt: {task['prompt'][:200]}...")
-                    print(f"      duration: {task['duration']}")
-                    print(f"      ratio: 16:9")
-                    print(f"      generate_audio: True")
-                    if result and "result" in result:
-                        raw_content = json.dumps(result["result"].get("content", []), ensure_ascii=False)[:1500]
-                        print(f"    [Video] API response content: {raw_content}")
-                    elif result:
-                        print(f"    [Video] Full API response: {json.dumps(result, ensure_ascii=False)[:1500]}")
-                    time.sleep(10)
-                    continue  # ← creates another NEW task
-                # 3. Poll the NEW task until it completes or fails
-                data = poll_task(task_id, interval=40)
-                url = data.get("url", "")
-                if not url:
-                    print(f"    [Video] FAILED: task {task_id[:16]}... returned no URL. Status={data.get('status')}")
-                    raw_json = data.get("raw_json", "")
-                    raw_text = data.get("raw_text", "")
-                    raw_response = data.get("raw_response", "")
-                    error_msg = data.get("error", "")
-                    if error_msg:
-                        print(f"    [Video] Error message: {error_msg}")
-                    if raw_json:
-                        print(f"    [Video] Raw resource JSON: {raw_json[:1000]}")
-                    if raw_text and not raw_json:
-                        print(f"    [Video] Raw text block: {raw_text[:1000]}")
-                    if raw_response and not raw_json and not raw_text:
-                        print(f"    [Video] Full check_task response: {raw_response[:1000]}")
-                    time.sleep(10)
-                    continue  # ← creates another NEW task
-                # 4. Download the result
-                dest = str(clips_dir / task["filename"])
-                if download_file(url, dest) and _file_ok(dest, 500000):
-                    clip_paths[idx] = dest
-                    print(f"    [Video] Retry successful: {task['filename']}")
-                    break
-                else:
-                    print(f"    [Video] FAILED: file too small or missing, creating new task...")
-                    time.sleep(10)
-                    continue
-            except Exception as e:
-                print(f"    [Video] FAILED (attempt {attempt}): {type(e).__name__}: {e}")
+                if raw_response and not raw_json and not raw_text:
+                    print(f"    [Video] Full check_task response: {raw_response[:1000]}")
                 time.sleep(10)
                 continue
+            dest = str(clips_dir / task["filename"])
+            if download_file(url, dest) and _file_ok(dest, 500000):
+                print(f"    [Video] Retry successful: {task['filename']}")
+                return dest
+            else:
+                print(f"    [Video] FAILED: file too small or missing, creating new task...")
+                time.sleep(10)
+                continue
+        except Exception as e:
+            print(f"    [Video] FAILED (attempt {attempt}): {type(e).__name__}: {e}")
+            time.sleep(10)
+            continue
 
-        if clip_paths[idx] is None:
-            print(f"    [Video] GIVING UP on clip {idx+1} after {MAX_RETRY} retries: {task['filename']}")
+    print(f"    [Video] GIVING UP on clip {idx+1} after {max_retries} retries: {task['filename']}")
+    return None
 
-    total = sum(1 for p in clip_paths[offset:offset + len(video_tasks)] if p is not None)
-    print(f"  [Video] Clips for this batch: {total}/{len(video_tasks)}")
+
+def _generate_video_clips(video_tasks, clips_dir, clip_paths, offset=0):
+    """Generate video clips in batches. Runs in a thread.
+
+    Each task has its own 'duration' (dynamic per-group, not fixed).
+    clip_paths[offset + i] corresponds to video_tasks[i]; entries already set
+    (per-clip resume) are skipped so no credits are re-spent.
+    """
+    batch_size = 12
+    total = len(video_tasks)
+
+    # --- Batch creation + polling ---
+    for batch_start in range(0, total, batch_size):
+        batch = video_tasks[batch_start:batch_start + batch_size]
+        for j, task in enumerate(batch):
+            idx = offset + batch_start + j
+            if clip_paths[idx] is not None:
+                continue  # already downloaded (per-clip resume)
+            dest = _create_and_poll_clip(task, clips_dir, idx, total)
+            if dest:
+                clip_paths[idx] = dest
+            if j < len(batch) - 1:
+                time.sleep(5)
+
+    # --- Retry failed clips one by one ---
+    failed = [offset + i for i in range(total) if clip_paths[offset + i] is None]
+    for idx in failed:
+        task = video_tasks[idx - offset]
+        dest = _retry_clip(task, clips_dir, idx)
+        if dest:
+            clip_paths[idx] = dest
+
+    ok_count = sum(1 for p in clip_paths[offset:offset + total] if p is not None)
+    print(f"  [Video] Clips for this batch: {ok_count}/{total}")
 
 
 def _generate_tts(script, dialogue, audio_dir, results, enhanced=False, quest=False):
@@ -708,6 +703,190 @@ def _step1_mcp(args):
     print("  MCP connected.")
 
 
+def _check_step2_resume(checkpoint, script, dirs, n, is_enhanced, is_quest):
+    """Check if Step 2 can be resumed from existing files. Returns tts_results or None."""
+    img_dir, audio_dir = dirs["images"], dirs["audio"]
+    step2_done = _step_done(checkpoint, "step2_images_tts")
+    char_scene_file = img_dir / "char_scene.png"
+    scene_file = img_dir / "scene.png"
+    char_scene_c_file = img_dir / "char_scene_c.png"
+    all_audio_exist = all((audio_dir / f"dialogue_{i}.mp3").exists() for i in range(n))
+    if is_quest:
+        all_zh_exist = True
+    else:
+        all_zh_exist = all((audio_dir / f"zh_{i}.mp3").exists() for i in range(n))
+    narration_files = (["hook.mp3", "outro.mp3"] if is_quest
+                       else ["intro.mp3", "outro.mp3", "practice_intro.mp3"])
+    narration_exist = all((audio_dir / f).exists() for f in narration_files)
+    all_dialogue_imgs_exist = (not (is_quest and True) and True) or all(
+        (img_dir / f"dialogue_img_{i}.png").exists() for i in range(n))
+    # Static/quest also need dialogue images
+    is_static = (checkpoint.get("structure") == "static")
+    is_q = is_quest
+    if not (is_static or is_q):
+        all_dialogue_imgs_exist = True
+    quest_imgs_ok = (not is_quest) or char_scene_c_file.exists()
+
+    if not (step2_done and char_scene_file.exists() and scene_file.exists()
+            and quest_imgs_ok and all_audio_exist and all_zh_exist
+            and narration_exist and all_dialogue_imgs_exist):
+        return None
+
+    print("  [Resume] Step 2 already done, loading existing images + audio...")
+    # Re-upload images to get CDN URLs (needed for video generation)
+    reupload_files = ["char_scene.png", "scene.png"]
+    if is_quest:
+        reupload_files.append("char_scene_c.png")
+    image_urls = {}
+    for filename in reupload_files:
+        filepath = str(img_dir / filename)
+        print(f"  [Image] Re-uploading {filename} for CDN URL...")
+        try:
+            upload_result = call_tool("file_upload", {"file_path": filepath})
+            if "result" in upload_result:
+                for item in upload_result["result"].get("content", []):
+                    if item.get("type") == "resource":
+                        res_json = json.loads(item.get("resource", {}).get("text", ""))
+                        image_urls[filename] = res_json.get("file_url", "")
+                    elif item.get("type") == "text":
+                        m = re.search(r"(https?://[^\s`'\")]+)", item.get("text", ""))
+                        if m:
+                            image_urls[filename] = m.group(1)
+        except Exception as e:
+            print(f"    [Image] Re-upload failed: {e}")
+
+    normal_paths = [str(audio_dir / f"dialogue_{i}.mp3") for i in range(n)]
+    if is_quest:
+        zh_paths = [""] * n
+    else:
+        zh_paths = [str(audio_dir / f"zh_{i}.mp3") for i in range(n)]
+    dialogue_durations = [_get_audio_duration(p) for p in normal_paths]
+    narration = {}
+    for name in (["hook", "outro"] if is_quest
+                 else ["intro", "outro", "practice_intro"]):
+        narration[name] = str(audio_dir / f"{name}.mp3")
+    tts_results = {
+        "narration": narration,
+        "normal_paths": normal_paths,
+        "dialogue_durations": dialogue_durations,
+        "zh_paths": zh_paths,
+        "vocab_paths": [],
+        "slow_paths": [],
+        "slow_durations": [],
+        "quiz_paths": [],
+    }
+    if is_enhanced:
+        vocab_count = len(script.get("vocabulary", []))
+        quiz_count = len(script.get("comprehension_questions", []))
+        tts_results["vocab_paths"] = [str(audio_dir / f"vocab_{i}.mp3") for i in range(vocab_count) if (audio_dir / f"vocab_{i}.mp3").exists()]
+        tts_results["quiz_paths"] = [str(audio_dir / f"quiz_{i}.mp3") for i in range(quiz_count) if (audio_dir / f"quiz_{i}.mp3").exists()]
+        tts_results["slow_paths"] = [str(audio_dir / f"dialogue_slow_{i}.mp3") for i in range(n) if (audio_dir / f"dialogue_slow_{i}.mp3").exists()]
+        tts_results["slow_durations"] = [_get_audio_duration(p) if p else 0.0 for p in tts_results["slow_paths"]]
+    print("  [Resume] Images + audio loaded.")
+    return tts_results, image_urls
+
+
+def _generate_images(image_prompts, img_dir, tts_thread):
+    """Generate character/scene images via MCP. Returns image_urls dict."""
+    image_urls = {}
+    image_failed = False
+    for prompt, filename in image_prompts:
+        print(f"  [Image] Generating: {filename}...")
+        try:
+            result = call_tool("generate_image", {
+                "prompt": prompt,
+                "provider": "frontier",
+                "quality": "high",
+                "image_size": "landscape_16_9",
+                "output_format": "png",
+            })
+            task_id = parse_task_id(result)
+            data = poll_task(task_id, interval=10, max_wait=600)
+            url = data.get("url", "")
+            if url:
+                dest = str(img_dir / filename)
+                download_file(url, dest)
+                image_urls[filename] = url
+                print(f"    [Image] Downloaded: {dest}")
+            else:
+                print(f"    [Image] FATAL: No URL for {filename}")
+                image_failed = True
+        except RuntimeError as e:
+            if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
+                print("\n  [FATAL] 所有 MCP Token 积分已耗尽！请充值后重新运行（--resume）继续。")
+                if tts_thread:
+                    tts_thread.join(timeout=5)
+                sys.exit(1)
+            raise
+
+    if image_failed:
+        missing = [fn for fn, _ in image_prompts if fn not in image_urls]
+        print(f"  [Image] ABORTING: Missing required images: {missing}")
+        if tts_thread:
+            tts_thread.join(timeout=5)
+        sys.exit(1)
+    return image_urls
+
+
+def _generate_dialogue_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
+                               is_quest, char_scene_cdn, char_scene_c_cdn,
+                               tts_thread):
+    """Generate per-line dialogue images for static/quest modes (5 concurrent)."""
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    n = len(dialogue)
+    mode_label = "quest" if is_quest else "static"
+    print(f"  [Image] Generating {n} dialogue line images ({mode_label} mode, 5 concurrent)...")
+
+    def _gen_one(i, line):
+        d_img_path = str(img_dir / f"dialogue_img_{i}.png")
+        if os.path.exists(d_img_path):
+            print(f"    [Image] dialogue_img_{i} already exists, skipping")
+            return i, True
+        img_prompt = line.get("image_prompt",
+                                f"{char_a_desc} and {char_b_desc} at {scene}, 3D cartoon style, 16:9")
+        if is_quest and line.get("phase") == "core" and char_scene_c_cdn:
+            ref_cdn = char_scene_c_cdn
+        else:
+            ref_cdn = char_scene_cdn
+        print(f"    [Image] Generating dialogue_img_{i}/{n}...")
+        try:
+            gen_params = {
+                "prompt": img_prompt,
+                "provider": "frontier",
+                "quality": "high",
+                "image_size": "landscape_16_9",
+                "output_format": "png",
+            }
+            if ref_cdn:
+                gen_params["image_urls"] = ref_cdn
+            result = call_tool("generate_image", gen_params)
+            task_id = parse_task_id(result)
+            data = poll_task(task_id, interval=10, max_wait=600)
+            url = data.get("url", "")
+            if url:
+                download_file(url, d_img_path)
+                print(f"      [Image] Downloaded: dialogue_img_{i}.png")
+                return i, True
+            print(f"      [Image] WARNING: No URL for dialogue_img_{i}, will use scene image as fallback")
+            return i, False
+        except RuntimeError as e:
+            if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
+                print("\n  [FATAL] 所有 MCP Token 积分已耗尽！请充值后重新运行（--resume）继续。")
+                if tts_thread:
+                    tts_thread.join(timeout=5)
+                sys.exit(1)
+            print(f"      [Image] ERROR generating dialogue_img_{i}: {e}")
+            return i, False
+        except Exception as e:
+            print(f"      [Image] ERROR generating dialogue_img_{i}: {e}")
+            return i, False
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futs = [pool.submit(_gen_one, i, line) for i, line in enumerate(dialogue)]
+        for fut in as_completed(futs):
+            fut.result()
+
+
 def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs: dict) -> dict:
     """Step 2: concurrent image generation + TTS audio, then launch clip_0.
 
@@ -731,8 +910,6 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
 
     char_a_desc = script.get("char_a_description", "friendly young man")
     char_b_desc = script.get("char_b_description", "friendly young woman")
-    # Prefer the LLM-generated scene name (e.g. "pharmacy") — more precise than
-    # the raw topic string, and works for outdoor scenes too
     scene = script.get("scene") or args.topic
 
     image_prompts = [
@@ -740,83 +917,15 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         (f"Scene background, {scene}, wide shot, showing all key elements of the scene, 3D cartoon style, no characters, no text, 16:9", "scene.png"),
     ]
     if is_quest:
-        # Third character (staff/interviewer) paired with char_a for core-phase lines
         char_c_desc = script.get("char_c_description", "friendly staff member")
         image_prompts.append(
             (f"Character design sheet, {char_a_desc} on the left, {char_c_desc} on the right, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_scene_c.png"))
 
-    # Check if Step 2 already completed (images + audio exist)
-    step2_done = _step_done(checkpoint, "step2_images_tts")
-    char_scene_file = img_dir / "char_scene.png"
-    scene_file = img_dir / "scene.png"
-    char_scene_c_file = img_dir / "char_scene_c.png"
-    all_audio_exist = all((audio_dir / f"dialogue_{i}.mp3").exists() for i in range(n))
-    # Quest mode has NO Chinese TTS (translation shown as burned subtitles only)
-    if is_quest:
-        all_zh_exist = True
-    else:
-        all_zh_exist = all((audio_dir / f"zh_{i}.mp3").exists() for i in range(n))
-    narration_files = (["hook.mp3", "outro.mp3"] if is_quest
-                       else ["intro.mp3", "outro.mp3", "practice_intro.mp3"])
-    narration_exist = all((audio_dir / f).exists() for f in narration_files)
-    # Static/quest modes: also check per-line dialogue images
-    all_dialogue_imgs_exist = (not (is_static or is_quest)) or all(
-        (img_dir / f"dialogue_img_{i}.png").exists() for i in range(n))
-    quest_imgs_ok = (not is_quest) or char_scene_c_file.exists()
-
+    # --- Resume check ---
+    resume_result = _check_step2_resume(checkpoint, script, dirs, n, is_enhanced, is_quest)
     tts_thread = None
-    if step2_done and char_scene_file.exists() and scene_file.exists() and quest_imgs_ok and all_audio_exist and all_zh_exist and narration_exist and all_dialogue_imgs_exist:
-        print("  [Resume] Step 2 already done, loading existing images + audio...")
-        # Re-upload images to get CDN URLs (needed for video generation)
-        reupload_files = ["char_scene.png", "scene.png"]
-        if is_quest:
-            reupload_files.append("char_scene_c.png")
-        image_urls = {}
-        for filename in reupload_files:
-            filepath = str(img_dir / filename)
-            print(f"  [Image] Re-uploading {filename} for CDN URL...")
-            try:
-                upload_result = call_tool("file_upload", {"file_path": filepath})
-                if "result" in upload_result:
-                    for item in upload_result["result"].get("content", []):
-                        if item.get("type") == "resource":
-                            res_json = json.loads(item.get("resource", {}).get("text", ""))
-                            image_urls[filename] = res_json.get("file_url", "")
-                        elif item.get("type") == "text":
-                            m = re.search(r"(https?://[^\s`'\")]+)", item.get("text", ""))
-                            if m:
-                                image_urls[filename] = m.group(1)
-            except Exception as e:
-                print(f"    [Image] Re-upload failed: {e}")
-
-        normal_paths = [str(audio_dir / f"dialogue_{i}.mp3") for i in range(n)]
-        if is_quest:
-            zh_paths = [""] * n  # quest: no Chinese TTS
-        else:
-            zh_paths = [str(audio_dir / f"zh_{i}.mp3") for i in range(n)]
-        dialogue_durations = [_get_audio_duration(p) for p in normal_paths]
-        narration = {}
-        for name in (["hook", "outro"] if is_quest
-                     else ["intro", "outro", "practice_intro"]):
-            narration[name] = str(audio_dir / f"{name}.mp3")
-        tts_results = {
-            "narration": narration,
-            "normal_paths": normal_paths,
-            "dialogue_durations": dialogue_durations,
-            "zh_paths": zh_paths,
-            "vocab_paths": [],
-            "slow_paths": [],
-            "slow_durations": [],
-            "quiz_paths": [],
-        }
-        if is_enhanced:
-            vocab_count = len(script.get("vocabulary", []))
-            quiz_count = len(script.get("comprehension_questions", []))
-            tts_results["vocab_paths"] = [str(audio_dir / f"vocab_{i}.mp3") for i in range(vocab_count) if (audio_dir / f"vocab_{i}.mp3").exists()]
-            tts_results["quiz_paths"] = [str(audio_dir / f"quiz_{i}.mp3") for i in range(quiz_count) if (audio_dir / f"quiz_{i}.mp3").exists()]
-            tts_results["slow_paths"] = [str(audio_dir / f"dialogue_slow_{i}.mp3") for i in range(n) if (audio_dir / f"dialogue_slow_{i}.mp3").exists()]
-            tts_results["slow_durations"] = [_get_audio_duration(p) if p else 0.0 for p in tts_results["slow_paths"]]
-        print("  [Resume] Images + audio loaded.")
+    if resume_result is not None:
+        tts_results, image_urls = resume_result
     else:
         # Start TTS thread immediately (only depends on script, not images)
         tts_results = {}
@@ -835,103 +944,19 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         print("  [TTS] Started TTS generation in background thread.")
 
         # Generate images in main thread (TTS runs concurrently)
-        image_urls = {}
-        image_failed = False
-        for prompt, filename in image_prompts:
-            print(f"  [Image] Generating: {filename}...")
-            try:
-                result = call_tool("generate_image", {
-                    "prompt": prompt,
-                    "provider": "frontier",
-                    "quality": "high",
-                    "image_size": "landscape_16_9",
-                    "output_format": "png",
-                })
-                task_id = parse_task_id(result)
-                data = poll_task(task_id, interval=10, max_wait=600)
-                url = data.get("url", "")
-                if url:
-                    dest = str(img_dir / filename)
-                    download_file(url, dest)
-                    image_urls[filename] = url
-                    print(f"    [Image] Downloaded: {dest}")
-                else:
-                    print(f"    [Image] FATAL: No URL for {filename}")
-                    image_failed = True
-            except RuntimeError as e:
-                if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
-                    print("\n  [FATAL] 所有 MCP Token 积分已耗尽！请充值后重新运行（--resume）继续。")
-                    tts_thread.join(timeout=5)
-                    sys.exit(1)
-                raise
+        image_urls = _generate_images(image_prompts, img_dir, tts_thread)
 
-        if image_failed:
-            missing = [fn for fn, _ in image_prompts if fn not in image_urls]
-            print(f"  [Image] ABORTING: Missing required images: {missing}")
-            tts_thread.join(timeout=5)
-            sys.exit(1)
-
-        # Static/quest modes: generate one dialogue image per line (no video clips)
-        # Concurrency: 5 images generated in parallel (ThreadPoolExecutor)
+        # Static/quest modes: generate one dialogue image per line
         if is_static or is_quest:
-            from concurrent.futures import ThreadPoolExecutor, as_completed
             char_scene_cdn = image_urls.get("char_scene.png", "")
             char_scene_c_cdn = image_urls.get("char_scene_c.png", "")
-            mode_label = "static" if is_static else "quest"
-            print(f"  [Image] Generating {n} dialogue line images ({mode_label} mode, 5 concurrent)...")
-
-            def _gen_one_dialogue_img(i, line):
-                d_img_path = str(img_dir / f"dialogue_img_{i}.png")
-                if os.path.exists(d_img_path):
-                    print(f"    [Image] dialogue_img_{i} already exists, skipping")
-                    return i, True
-                img_prompt = line.get("image_prompt", f"{char_a_desc} and {char_b_desc} at {scene}, 3D cartoon style, 16:9")
-                if is_quest and line.get("phase") == "core" and char_scene_c_cdn:
-                    ref_cdn = char_scene_c_cdn
-                else:
-                    ref_cdn = char_scene_cdn
-                print(f"    [Image] Generating dialogue_img_{i}/{n}...")
-                try:
-                    gen_params = {
-                        "prompt": img_prompt,
-                        "provider": "frontier",
-                        "quality": "high",
-                        "image_size": "landscape_16_9",
-                        "output_format": "png",
-                    }
-                    if ref_cdn:
-                        gen_params["image_urls"] = ref_cdn
-                    result = call_tool("generate_image", gen_params)
-                    task_id = parse_task_id(result)
-                    data = poll_task(task_id, interval=10, max_wait=600)
-                    url = data.get("url", "")
-                    if url:
-                        download_file(url, d_img_path)
-                        print(f"      [Image] Downloaded: dialogue_img_{i}.png")
-                        return i, True
-                    print(f"      [Image] WARNING: No URL for dialogue_img_{i}, will use scene image as fallback")
-                    return i, False
-                except RuntimeError as e:
-                    if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
-                        print("\n  [FATAL] 所有 MCP Token 积分已耗尽！请充值后重新运行（--resume）继续。")
-                        tts_thread.join(timeout=5)
-                        sys.exit(1)
-                    print(f"      [Image] ERROR generating dialogue_img_{i}: {e}")
-                    return i, False
-                except Exception as e:
-                    print(f"      [Image] ERROR generating dialogue_img_{i}: {e}")
-                    return i, False
-
-            with ThreadPoolExecutor(max_workers=5) as pool:
-                futs = [pool.submit(_gen_one_dialogue_img, i, line)
-                        for i, line in enumerate(dialogue)]
-                for fut in as_completed(futs):
-                    fut.result()
+            _generate_dialogue_images(
+                dialogue, img_dir, char_a_desc, char_b_desc, scene,
+                is_quest, char_scene_cdn, char_scene_c_cdn, tts_thread)
 
         print("  [Image] All images done. Waiting for TTS...")
 
-    # clip_0 (scene establishing pan) doesn't depend on TTS — launch it now so
-    # it generates in parallel while the TTS thread finishes
+    # --- Launch clip_0 (scene establishing pan) in parallel ---
     scene_url = image_urls.get("scene.png", "")
     char_scene_url = image_urls.get("char_scene.png", "")
     clips_dir.mkdir(parents=True, exist_ok=True)
@@ -939,9 +964,8 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
     scene_clip_thread = None
 
     if is_static or is_quest:
-        # Static/quest modes: no video clips at all — all segments use static images
         clip_paths = []
-        print(f"  [{ 'Static' if is_static else 'Quest' }] Skipping clip_0 generation (no video clips)")
+        print(f"  [{'Static' if is_static else 'Quest'}] Skipping clip_0 generation (no video clips)")
     else:
         scene_clip_task = _build_scene_clip_task(scene, scene_url)
         clip0_path = str(clips_dir / "clip_0.mp4")
@@ -961,8 +985,7 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
     if tts_thread is not None:
         tts_thread.join()
 
-    # Validate TTS results BEFORE saving the step2 checkpoint — otherwise a
-    # silently-failed TTS run gets persisted and grouping uses wrong durations
+    # Validate TTS results BEFORE saving the step2 checkpoint
     _tts_err = tts_results.get("fatal_error")
     if _tts_err:
         print("  [TTS] FATAL: TTS generation thread crashed:")

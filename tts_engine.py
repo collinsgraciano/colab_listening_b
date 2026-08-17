@@ -176,17 +176,8 @@ class TTSEngine:
     @staticmethod
     def get_duration(audio_path: str) -> float:
         """Get audio duration in seconds via ffprobe."""
-        if not os.path.exists(audio_path):
-            return 0.0
-        try:
-            out = subprocess.check_output(
-                ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
-                 "-of", "json", audio_path],
-                text=True,
-            )
-            return float(json.loads(out)["format"]["duration"])
-        except Exception:
-            return 0.0
+        from media_utils import get_duration as _get_dur
+        return _get_dur(audio_path)
 
     @staticmethod
     def _loudnorm(input_path: str, output_path: str | None = None):

@@ -16,7 +16,7 @@ _PARENT = str(Path(__file__).parent.resolve())
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-from video_compose import FONT_EN, FONT_ZH
+from media_utils import FONT_EN, FONT_ZH
 
 # YouTube thumbnail specs
 THUMB_W = 1280

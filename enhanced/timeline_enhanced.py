@@ -16,7 +16,7 @@ _PARENT = str(Path(__file__).parent.parent.resolve())
 if _PARENT not in sys.path:
     sys.path.insert(0, _PARENT)
 
-from timeline import _format_srt_time
+from media_utils import build_srt
 
 
 def build_enhanced_timeline(script: dict, dialogue_durations: list[float],
@@ -142,40 +142,4 @@ def build_srt_from_timeline_enhanced(timeline: list[dict], gap: float = 0.0) -> 
     Skips: vocab, listen_en, listen_zh, practice, title_card, practice_intro, outro, quiz
     Text is on static images, not subtitles.
     """
-    srt_lines = []
-    idx = 1
-    current_time = 0.0
-
-    skip_types = {"vocab", "listen_en", "listen_zh", "practice",
-                  "title_card", "practice_intro", "outro", "quiz"}
-
-    for seg in timeline:
-        dur = seg["duration"]
-        start = current_time
-        end = start + dur
-
-        text_en = seg.get("subtitle_en", "")
-        text_zh = seg.get("subtitle_zh", "")
-        seg_type = seg.get("type", "")
-
-        if seg_type in skip_types:
-            current_time = end + gap
-            continue
-
-        if not text_en:
-            current_time = end + gap
-            continue
-
-        audio_dur = seg.get("audio_dur", dur)
-        srt_end = start + audio_dur
-
-        srt_lines.append(str(idx))
-        srt_lines.append(f"{_format_srt_time(start)} --> {_format_srt_time(srt_end)}")
-        srt_lines.append(text_en)
-        if text_zh:
-            srt_lines.append(text_zh)
-        srt_lines.append("")
-        idx += 1
-        current_time = end + gap
-
-    return "\n".join(srt_lines)
+    return build_srt(timeline, gap=gap)
