@@ -39,6 +39,7 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
+            "reasoning_effort": "low",
         }
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
