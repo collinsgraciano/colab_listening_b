@@ -291,11 +291,11 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         (f"Scene background, {scene}, wide shot, showing all key elements of the scene, 3D cartoon style, no characters, no text, 16:9", "scene.png"),
     ]
     if is_stop_motion:
-        # Per-character reference sheets for pose consistency
+        # Per-character three-view reference sheets for pose consistency
         image_prompts.append(
-            (f"Character reference sheet, {char_a_desc}, single character, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_a_ref.png"))
+            (f"Character model sheet, three-view turnaround reference, {char_a_desc}, showing front view, side profile, and back view, single character, plain white background, full body, 3D cartoon style with bold black outline, no text, no background scene", "char_a_ref.png"))
         image_prompts.append(
-            (f"Character reference sheet, {char_b_desc}, single character, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_b_ref.png"))
+            (f"Character model sheet, three-view turnaround reference, {char_b_desc}, showing front view, side profile, and back view, single character, plain white background, full body, 3D cartoon style with bold black outline, no text, no background scene", "char_b_ref.png"))
     if is_quest:
         char_c_desc = script.get("char_c_description", "friendly staff member")
         image_prompts.append(
