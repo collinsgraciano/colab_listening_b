@@ -55,8 +55,10 @@ LANDING_ROTATION = 1.4  # degrees
 # Pose canvas for normalization (transparent, larger than target to avoid clipping)
 POSE_CANVAS_W = TARGET_W
 POSE_CANVAS_H = TARGET_H
-POSE_TARGET_H = TARGET_H - 40   # leave room for subtitle area at bottom
-POSE_BOTTOM = TARGET_H - 20      # bottom anchor
+POSE_TARGET_H = TARGET_H - 80   # leave room for subtitle area at bottom
+POSE_BOTTOM = TARGET_H - 40      # bottom anchor (used for full-body, kept for compat)
+# For half-body close-ups, center vertically instead of bottom-anchoring
+POSE_CENTER_Y = TARGET_H // 2    # vertical center for half-body poses
 
 # Shadow
 SHADOW_RGB = (145, 141, 133)
@@ -113,8 +115,10 @@ def normalize_pose(img: Image.Image,
                    canvas_h: int = POSE_CANVAS_H,
                    target_h: int = POSE_TARGET_H,
                    bottom: int = POSE_BOTTOM) -> Image.Image:
-    """Scale an RGBA character image into a shared transparent canvas with
-    bottom anchoring. This ensures consistent alignment for optical flow.
+    """Scale an RGBA character image into a shared transparent canvas.
+
+    For half-body close-ups, the character is centered vertically rather
+    than bottom-anchored, since there are no feet to align.
     """
     source = img.convert("RGBA")
     # Scale to target height, preserving aspect ratio
@@ -129,9 +133,8 @@ def normalize_pose(img: Image.Image,
     sprite = source.resize((tw, th), Image.Resampling.LANCZOS)
     canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
     left = round((canvas_w - sprite.width) / 2)
-    top = bottom - sprite.height
-    if top < 0:
-        top = 0
+    # Center vertically for half-body close-ups
+    top = round((canvas_h - sprite.height) / 2)
     canvas.alpha_composite(sprite, (left, top))
     return canvas
 
@@ -679,9 +682,9 @@ def _render_dialogue_segment(
     n_poses = len(poses)
     direction = 1 if line_idx % 2 == 0 else -1
 
-    # Character position (centered, bottom-anchored)
+    # Character position (centered for half-body close-ups)
     char_x = TARGET_W / 2
-    char_bottom = POSE_BOTTOM
+    char_bottom = POSE_CENTER_Y
 
     # Determine pose schedule
     if n_poses == 1:
