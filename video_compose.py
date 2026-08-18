@@ -704,8 +704,14 @@ def compose_static(
     srt_dir: str,
     pad: float = 0.4,
     progress_cb=None,
+    animated: bool = False,
 ) -> str:
     """Compose final listening practice video using ONLY static images (no video clips).
+
+    When *animated* is True, dialogue segments apply a landing-transform micro-
+    animation (scale decay 1.04x→1.0, ±14px horizontal pan, ±10px sine bounce
+    over 0.3s) inspired by the image-motion-animation stop-motion technique.
+    Other segments (title_card, practice, etc.) remain static.
 
     All segments use ``-loop 1`` on static images:
       - title_card: scene_img + title overlay (transparent PNG)
@@ -915,10 +921,30 @@ def compose_static(
             if not os.path.exists(d_img):
                 d_img = scene_img
 
+            # Build VF: landing-transform micro-animation when animated=True,
+            # else plain VF_NORM.  Landing transform: scale 1.04x → crop to
+            # 1280x720 with time-varying pan (±14px x, ±10px sine y, 0.3s decay,
+            # alternating direction per line) — gives stop-motion "settle" feel.
+            if animated:
+                _dir = 1 if (idx % 2 == 0) else -1
+                _ld = 0.3  # landing duration (seconds)
+                _up_w = int(TARGET_W * 1.04)
+                _up_h = int(TARGET_H * 1.04)
+                vf_dialogue = (
+                    f"scale={TARGET_W}:{TARGET_H}:force_original_aspect_ratio=decrease,"
+                    f"pad={TARGET_W}:{TARGET_H}:(ow-iw)/2:(oh-ih)/2,"
+                    f"scale={_up_w}:{_up_h},"
+                    f"crop=w={TARGET_W}:h={TARGET_H}:"
+                    f"x='(iw-{TARGET_W})/2+{_dir}*14*max(0,1-t/{_ld})':"
+                    f"y='(ih-{TARGET_H})/2-10*sin(min(1,t/{_ld})*PI)'"
+                )
+            else:
+                vf_dialogue = VF_NORM
+
             if audio_file and os.path.exists(audio_file):
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", d_img, "-i", audio_file,
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", VF_NORM, "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", vf_dialogue, "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
                        out_path]
@@ -926,7 +952,7 @@ def compose_static(
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", d_img,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", VF_NORM, "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", vf_dialogue, "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        out_path]
 

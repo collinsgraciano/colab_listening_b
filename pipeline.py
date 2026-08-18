@@ -170,8 +170,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=None, help="SenseNova API key (or set SENSENOVA_API_KEY env var)")
     parser.add_argument("--model", default=None, choices=["deepseek-v4-flash", "glm-5.2"],
                         help="SenseNova LLM model: 'deepseek-v4-flash' (default) or 'glm-5.2'")
-    parser.add_argument("--structure", default="original", choices=["original", "enhanced", "static", "quest"],
-                        help="Video structure: 'original' (4-chapter, video clips), 'enhanced' (7-chapter with vocab+quiz+slow), 'static' (all images, no video generation), or 'quest' (task-hook slow listening, all images, 3-phase dialogue)")
+    parser.add_argument("--structure", default="original", choices=["original", "enhanced", "static", "static_animated", "quest"],
+                        help="Video structure: 'original' (4-chapter, video clips), 'enhanced' (7-chapter with vocab+quiz+slow), 'static' (all images, no video generation), 'static_animated' (static + landing-transform micro-animation on dialogue), or 'quest' (task-hook slow listening, all images, 3-phase dialogue)")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
     parser.add_argument("--no-4k", dest="no_4k", action="store_true", help="Skip the final 4K upscaling step")
     parser.add_argument("--upscale-timeout", type=int, default=3600, help="Timeout in seconds for 4K upscale (default 3600)")
@@ -276,7 +276,7 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
     dialogue = script.get("dialogue", [])
     n = len(dialogue)
     is_enhanced = (args.structure == "enhanced")
-    is_static = (args.structure == "static")
+    is_static = (args.structure in ("static", "static_animated"))
     is_quest = (args.structure == "quest")
     img_dir, audio_dir, clips_dir = dirs["images"], dirs["audio"], dirs["clips"]
 
@@ -389,7 +389,7 @@ def _step3_clips(args, checkpoint: dict, work_dir: Path, dirs: dict, script: dic
     dialogue_durations = tts_results.get("dialogue_durations", [])
     audio_dir, clips_dir = dirs["audio"], dirs["clips"]
 
-    if args.structure in ("static", "quest"):
+    if args.structure in ("static", "static_animated", "quest"):
         print(f"Step 3: Skipped ({args.structure} mode — no video generation)")
         _save_checkpoint(work_dir, "step3_video")
         print(f"  TTS: {len(normal_paths)} EN + {sum(1 for p in zh_paths if p)} ZH")
@@ -605,7 +605,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             pad=args.pad,
             progress_cb=progress_cb,
         )
-    elif args.structure == "static":
+    elif args.structure in ("static", "static_animated"):
         from video_compose import compose_static
         n = len(script.get("dialogue", []))
         dialogue_images = [str(dirs["images"] / f"dialogue_img_{i}.png") for i in range(n)]
@@ -621,6 +621,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             srt_dir=str(sub_dir),
             pad=args.pad,
             progress_cb=progress_cb,
+            animated=(args.structure == "static_animated"),
         )
     else:
         final_path = compose_listening(

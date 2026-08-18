@@ -85,6 +85,17 @@ STRUCTURES = {
         "needs_zh_tts": True,
         "needs_dialogue_images": True,
     },
+    "static_animated": {
+        "generate_script": generate_listening_script,
+        "build_timeline": lambda script, ddur, pad, pd: build_listening_timeline(
+            script, ddur, pad=pad, practice_duration=pd),
+        "build_srt": lambda tl, gap=0.0: build_srt_from_timeline(tl, gap=gap),
+        "compose": compose_static,
+        "needs_video_clips": False,
+        "needs_zh_tts": True,
+        "needs_dialogue_images": True,
+        "animated": True,
+    },
     "quest": {
         "generate_script": _quest_script,
         "build_timeline": lambda script, ddur, pad, pd: _quest_timeline(
