@@ -155,7 +155,7 @@ class TTSEngine:
         if cls._kokoro_pipeline is None:
             from kokoro import KPipeline
             try:
-                cls._kokoro_pipeline = KPipeline(lang_code='a', repo_id='hexgrad/Kokoro-82M')
+                cls._kokoro_pipeline = KPipeline(lang_code='a')
             except Exception as e:
                 raise RuntimeError(f"Kokoro English model failed to load: {e}") from e
         return cls._kokoro_pipeline
@@ -168,7 +168,7 @@ class TTSEngine:
         if cls._kokoro_zh_pipeline is None:
             from kokoro import KPipeline
             try:
-                cls._kokoro_zh_pipeline = KPipeline(lang_code='z', repo_id='hexgrad/Kokoro-82M')
+                cls._kokoro_zh_pipeline = KPipeline(lang_code='z')
             except Exception as e:
                 raise RuntimeError(f"Kokoro Chinese model failed to load: {e}") from e
         return cls._kokoro_zh_pipeline
