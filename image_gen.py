@@ -224,11 +224,13 @@ def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
         if os.path.exists(out_path):
             print(f"    [Pose] pose_{line_idx}_{pose_idx} already exists, skipping")
             return (line_idx, pose_idx, True)
-        # Ensure white background + bold black outline for clean rembg removal
+        # Ensure white background + tight cel-shaded outline (character + held objects)
+        # for clean rembg separation. Outline must hug the silhouette, not be a loose box.
+        outline_style = "cel-shaded with thin clean black outline tightly hugging the character silhouette and all held objects"
         if "white background" not in pose_prompt.lower():
-            pose_prompt = pose_prompt.rstrip(".") + ", plain white background, no background scene, 3D cartoon style with bold black outline"
+            pose_prompt = pose_prompt.rstrip(".") + f", plain white background, no background scene, 3D cartoon style, {outline_style}"
         else:
-            pose_prompt = pose_prompt.rstrip(".") + ", 3D cartoon style with bold black outline"
+            pose_prompt = pose_prompt.rstrip(".") + f", 3D cartoon style, {outline_style}"
         # Add character description if not already present (consistency anchor)
         if char_desc and char_desc.lower() not in pose_prompt.lower():
             pose_prompt = f"{char_desc}, {pose_prompt}"
