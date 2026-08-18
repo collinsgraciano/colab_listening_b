@@ -143,6 +143,7 @@ TECHNICAL REQUIREMENTS:
 - "char_c_description": detailed physical description of char_c (the staff member, including uniform or work attire). MUST be identical across ALL char_c entries.
 - "host_description": detailed physical description of the HOST/NARRATOR character who appears on-screen in the Welcome, Hook Intro, and Outro segments (gender, hair, clothing — should look like a friendly, warm TV show host, NOT one of the 3 dialogue characters). This is a SEPARATE fourth character who never appears in the dialogue.
 - "host_gender": "male" or "female"
+- "host_bg_prompt": a prompt for the TV studio background where the host appears (e.g. "a bright modern TV studio set with a large screen behind, warm lighting, plants on the side, professional news desk feel, 3D cartoon style, no people"). This background is used for all host segments.
 - "char_a_gender", "char_b_gender", "char_c_gender": "male" or "female"
 - "char_a_role", "char_b_role", "char_c_role": their roles (e.g. "office worker", "colleague", "barista")
 - "listening_question_en": ONE specific, simple listening question whose ANSWER is revealed inside the REVEAL phase of the dialogue (e.g. "Why is it called bubble tea?"). The viewer must listen for it. Max 12 words.
@@ -161,6 +162,7 @@ TECHNICAL REQUIREMENTS:
 - "youtube_description": a full YouTube description (max 3000 chars). First line hook with the main keyword. Include the listening question early, a "⏱️ Chapters:" section with timestamps for: 00:00 Intro · Listening Task, 00:xx Slow Dialogue, 00:xx Outro · Answer & CTA. Also list the key_words with 繁中 meanings. End with 3 hashtags (#EnglishListening #SlowEnglish #LearnEnglish) and a subscribe CTA. ALL Chinese in Traditional Chinese.
 - "youtube_tags": an array of 15-20 SEO tags (mix short and long-tail, English + Traditional Chinese, include "slow English", "English for beginners")
 - "scene": the English name of the scene/location (e.g. "coffee shop", "airport check-in counter", "hotel lobby")
+- "scene_images": an array of 3-5 objects, each describing a DIFFERENT camera angle or area of the scene for visual variety. Each object has "prompt" (a detailed image generation prompt for that scene view, 3D cartoon style, 16:9, no people) and "label" (short English label like "counter", "menu board", "entrance", "seating area"). These different backgrounds will be used for different groups of dialogue lines to create visual variety.
 - "thumbnail_expression", "thumbnail_action": as usual (main character on thumbnail)
 - "thumbnail_subtitle": short Traditional Chinese subtitle (e.g. "慢速聽力", "初學者必聽", "帶著問題聽")
 - "thumbnail_icons": an array of 4-5 objects {{"en": string, "zh": string}} — target words shown as circular icons
@@ -206,6 +208,7 @@ JSON schema:
   "char_c_gender": string,
   "host_description": string,
   "host_gender": string,
+  "host_bg_prompt": string,
   "char_a_role": string,
   "char_b_role": string,
   "char_c_role": string,
@@ -214,6 +217,7 @@ JSON schema:
   "youtube_tags": [string],
   "thumbnail_prompt": string,
   "scene": string,
+  "scene_images": [{{"prompt": string, "label": string}}],
   "thumbnail_expression": string,
   "thumbnail_action": string,
   "thumbnail_subtitle": string,
@@ -290,6 +294,7 @@ def generate_quest_script(topic: str, cefr: str = "A1",
     script.setdefault("youtube_tags", [])
     script.setdefault("thumbnail_prompt", "")
     script.setdefault("scene", "")
+    script.setdefault("scene_images", [{"prompt": f"a {script.get('scene', 'shop')} interior, 3D cartoon style, 16:9, no people", "label": "main"}])
     script.setdefault("thumbnail_expression", "surprised and excited")
     script.setdefault("thumbnail_action", "looking toward the camera and gesturing naturally")
     script.setdefault("thumbnail_subtitle", "慢速聽力")
@@ -300,6 +305,7 @@ def generate_quest_script(topic: str, cefr: str = "A1",
     script.setdefault("welcome_zh", "歡迎來到英文聽力頻道。")
     script.setdefault("host_description", "a friendly young woman with short brown hair, wearing a smart blue blazer, warm smile, professional TV host appearance")
     script.setdefault("host_gender", "female")
+    script.setdefault("host_bg_prompt", "a bright modern TV studio set with a large screen behind, warm lighting, plants on the side, professional news desk feel, 3D cartoon style, no people")
     script.setdefault("char_c_description", "")
     script.setdefault("char_c_gender", "female")
     script.setdefault("char_c_role", "staff")

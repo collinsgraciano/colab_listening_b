@@ -19,7 +19,7 @@ from media_utils import build_srt
 
 
 def build_quest_timeline(script: dict, dialogue_durations: list[float],
-                         pad: float = 5.0) -> list[dict]:
+                         pad: float = 0.4) -> list[dict]:
     """Build a timeline for the quest (task-hook slow listening) lesson.
 
     Args:

@@ -309,6 +309,14 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         char_c_desc = script.get("char_c_description", "friendly staff member")
         image_prompts.append(
             (f"Character design sheet, {char_a_desc} on the left, {char_c_desc} on the right, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_scene_c.png"))
+        # Host background (TV studio)
+        host_bg_prompt = script.get("host_bg_prompt", "a bright modern TV studio set with a large screen behind, warm lighting, 3D cartoon style, no people, 16:9")
+        image_prompts.append((host_bg_prompt, "host_bg.png"))
+        # Multiple scene backgrounds for dialogue variety
+        scene_images = script.get("scene_images", [])
+        for si, si_data in enumerate(scene_images[:5]):
+            si_prompt = si_data.get("prompt", f"a {scene} interior, 3D cartoon style, 16:9, no people")
+            image_prompts.append((si_prompt, f"scene_{si}.png"))
 
     # --- Resume check ---
     resume_result = _check_step2_resume(checkpoint, script, dirs, n, is_enhanced, is_quest)
@@ -618,13 +626,19 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
         )
     elif args.structure == "quest":
         from quest.video_compose_quest import compose_quest
-        # Build per-line pose_images from 3 character atlases
-        # pose_images[i] = [pose_{speaker}_{j}.png for j in 0..3]
-        char_pose_map = {}  # cache per-character pose paths
-        for ck in ("char_a", "char_b", "char_c", "host"):
+        # Build per-character pose map (dialogue chars: 4 poses, host: 8 poses)
+        char_pose_map = {}
+        for ck in ("char_a", "char_b", "char_c"):
             poses = [str(dirs["images"] / f"pose_{ck}_{j}.png") for j in range(4)]
             if all(os.path.exists(p) for p in poses):
                 char_pose_map[ck] = poses
+        # Host: 8 poses
+        host_poses = [str(dirs["images"] / f"pose_host_{j}.png") for j in range(8)]
+        if not all(os.path.exists(p) for p in host_poses):
+            host_poses = [str(dirs["images"] / f"pose_host_{j}.png") for j in range(4)]
+        char_pose_map["host"] = host_poses
+
+        # Fallback pose_images (legacy)
         dialogue = script.get("dialogue", [])
         pose_images = []
         for line in dialogue:
@@ -633,12 +647,29 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             if not poses:
                 poses = char_pose_map.get("char_a", [scene_img])
             pose_images.append(poses)
-        host_poses = char_pose_map.get("host", [scene_img] * 4)
+
+        # Host background (TV studio)
+        host_bg = str(dirs["images"] / "host_bg.png")
+        if not os.path.exists(host_bg):
+            host_bg = scene_img
+
+        # Multiple scene backgrounds for dialogue variety
+        scene_bg_list = [scene_img]
+        si_list = script.get("scene_images", [])
+        for si in range(min(5, len(si_list))):
+            p = str(dirs["images"] / f"scene_{si}.png")
+            if os.path.exists(p):
+                scene_bg_list.append(p)
+            else:
+                scene_bg_list.append(scene_img)
+
         final_path = compose_quest(
             work_dir=str(work_dir),
             pose_images=pose_images,
             char_pose_map=char_pose_map,
             host_poses=host_poses,
+            host_bg=host_bg,
+            scene_bg_list=scene_bg_list,
             timeline=timeline,
             script=script,
             narration=narration,
@@ -765,7 +796,7 @@ def main():
     if args.num_lines is None:
         args.num_lines = 48 if args.structure == "quest" else 18
     if args.pad is None:
-        args.pad = 5.0 if args.structure == "quest" else 0.4
+        args.pad = 0.4
 
     if args.api_key:
         os.environ["SENSENOVA_API_KEY"] = args.api_key

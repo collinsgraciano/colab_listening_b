@@ -186,19 +186,24 @@ def _render_outro_frame(question_en, question_zh, scene_img_path,
 
 
 def _build_pose_schedule(n_poses: int, total_frames: int, fps: float,
-                         seed: int) -> list[tuple[int, int]]:
+                         seed: int, is_speaker: bool = True) -> list[tuple[int, int]]:
     """Build a randomized pose schedule: list of (pose_idx, start_frame).
 
-    Each pose is held for 0.5-2.0s (randomized). The first pose is always 0
-    (speaking). Consecutive poses are always different.
+    Speaker: switches pose every 0.4-1.2s (frequent, natural talking).
+    Listener: switches pose every 1.0-3.0s (subtle, occasional nods/reactions).
+    First pose is always 0 (speaking) for speaker, 1 (listening) for listener.
+    Consecutive poses are always different.
     """
     rng = random.Random(seed)
     if n_poses <= 1:
-        return [(0, 0)]
-    schedule = [(0, 0)]
+        return [(0, 0)] if is_speaker else [(min(1, n_poses - 1), 0)]
+
+    first_pose = 0 if is_speaker else 1
+    schedule = [(first_pose, 0)]
     frame = 0
+    min_hold, max_hold = (0.4, 1.2) if is_speaker else (1.0, 3.0)
     while frame < total_frames:
-        hold = rng.uniform(0.5, 2.0)
+        hold = rng.uniform(min_hold, max_hold)
         frame += max(1, round(hold * fps))
         if frame < total_frames:
             current = schedule[-1][0]
@@ -289,46 +294,50 @@ def _render_sm_segment(
             else:
                 positions.append(1280 * 0.65)
 
-    # Build random pose schedule for the speaker
+    # Build random pose schedule for each character layer
     total_frames = max(1, round(duration * DELIVERY_FPS))
-    speaker_schedule = None
+    rng = random.Random(seed)
+    schedules = []
     for i, layer in enumerate(processed_layers):
-        if layer["is_speaker"]:
-            speaker_schedule = _build_pose_schedule(
-                len(layer["poses"]), total_frames, DELIVERY_FPS, seed)
-            break
+        s = _build_pose_schedule(
+            len(layer["poses"]), total_frames, DELIVERY_FPS,
+            seed + i * 100, is_speaker=layer["is_speaker"])
+        schedules.append(s)
 
     cy = POSE_CENTER_Y
 
     for fidx in range(total_frames):
-        # Start with background
         canvas = bg_img.copy()
 
         for li, layer in enumerate(processed_layers):
             poses = layer["poses"]
+            schedule = schedules[li]
             x = positions[li] if li < len(positions) else 1280 * 0.5
 
-            if layer["is_speaker"] and speaker_schedule:
-                # Use random pose schedule
-                pose_idx = 0
-                local_t = fidx / DELIVERY_FPS
-                for pi, start_frame in reversed(speaker_schedule):
-                    if fidx >= start_frame:
-                        pose_idx = pi
-                        local_t = (fidx - start_frame) / DELIVERY_FPS
-                        break
-                pose = poses[pose_idx]
+            # Find which pose to use at this frame
+            pose_idx = schedule[0][0]
+            local_t = fidx / DELIVERY_FPS
+            for pi, start_frame in reversed(schedule):
+                if fidx >= start_frame:
+                    pose_idx = pi
+                    local_t = (fidx - start_frame) / DELIVERY_FPS
+                    break
+
+            pose = poses[pose_idx]
+
+            if layer["is_speaker"]:
                 landing = compute_landing(local_t, direction=direction)
                 scale = 1.0 + landing["scale"]
                 px = x + landing["x"]
                 py = cy + landing["y"]
                 rot = landing["rotation"]
             else:
-                # Listener: static listening pose (index 1), no landing
-                pose = poses[1] if len(poses) > 1 else poses[0]
+                # Listener: subtle idle motion — small random sway
+                sway_x = rng.uniform(-3, 3)
+                sway_y = rng.uniform(-2, 2)
                 scale = 1.0
-                px = x
-                py = cy
+                px = x + sway_x
+                py = cy + sway_y
                 rot = 0.0
 
             from stop_motion import transform_pose, paste_with_shadow
@@ -390,33 +399,20 @@ def compose_quest(
     normal_paths: list[str],
     scene_img: str,
     srt_dir: str,
-    pad: float = 5.0,
+    pad: float = 0.4,
     host_poses: list[str] | None = None,
     char_pose_map: dict[str, list[str]] | None = None,
+    host_bg: str | None = None,
+    scene_bg_list: list[str] | None = None,
     progress_cb=None,
 ) -> str:
-    """Compose the final quest (task-hook slow listening) video — stop-motion.
+    """Compose the final quest video — stop-motion with multi-character + multi-scene.
 
     Args:
-        work_dir: Working directory for temp files and output.
-        pose_images: Per-line list of pose image paths (fallback, used when
-                    char_pose_map is None).
-        timeline: From build_quest_timeline (audio_dur enriched).
-        script: Quest script dict (dialogue lines carry "on_screen").
-        narration: {"welcome": path, "hook": path, "outro": path}.
-        normal_paths: English dialogue audio paths (slow speed).
-        scene_img: Scene background image path.
-        srt_dir: Directory used as FFmpeg cwd for the subtitle burn.
-        pad: Silence pad after dialogue lines (seconds).
-        host_poses: Pose image paths for the host/narrator character.
-        char_pose_map: Per-character pose paths dict, e.g.
-            {"char_a": ["path/0.png", ...], "char_b": [...], "char_c": [...]}.
-            When provided, used with dialogue["on_screen"] to build multi-char
-            layers. Falls back to pose_images when None.
-        progress_cb: callback(percent, message).
-
-    Returns:
-        Path to final video (named by YouTube title).
+        host_bg: Background image for host segments (TV studio). Falls back to scene_img.
+        scene_bg_list: List of background images for dialogue segments.
+            Different backgrounds are used for different groups of lines for
+            visual variety. Falls back to [scene_img] if None.
     """
     def _cb(pct, msg):
         if progress_cb:
@@ -433,10 +429,17 @@ def compose_quest(
     question_en = script.get("listening_question_en", "")
     question_zh = script.get("listening_question_zh", "")
     hook_en = script.get("hook_intro_en", "")
+    host_bg_path = host_bg or scene_img
+    scene_bgs = scene_bg_list or [scene_img]
+    dialogue = script.get("dialogue", [])
+    # Assign scene backgrounds to dialogue lines (cycle through scene_bgs)
+    # Group consecutive lines into chunks of ~5, each group gets a different bg
+    n_scene_bgs = max(1, len(scene_bgs))
 
     segments = []
     seg_idx = 0
     total_segs = len(timeline)
+    dialogue_seg_idx = 0  # track dialogue segment count for scene_bg rotation
 
     for seg in timeline:
         seg_type = seg["type"]
@@ -445,7 +448,7 @@ def compose_quest(
         out_path = str(tmp_dir / f"seg_{seg_idx:03d}.mp4")
         seg_idx += 1
 
-        cmd = None  # FFmpeg cmd for static fallback; None for stop-motion segments
+        cmd = None
         audio_file = None
         audio_dur = seg.get("audio_dur", duration - pad)
 
@@ -460,23 +463,23 @@ def compose_quest(
 
         fade_af = f"afade=t=in:st=0:d=0.05,afade=t=out:st={max(0, audio_dur-0.05):.2f}:d=0.05"
 
-        # --- All segment types use stop-motion rendering (host or dialogue chars) ---
+        # --- All segment types use stop-motion rendering ---
         if seg_type in ("welcome", "hook_intro", "outro"):
-            # Host stop-motion, no overlay — subtitles burned later like dialogue
+            # Host stop-motion on TV studio background
             h_poses = host_poses or [scene_img]
             char_layers = [{"poses": h_poses, "is_speaker": True}]
             frames_dir = work / "sm_frames" / f"{seg_type}_{seg_idx}"
             cache_dir = work / "sm_frames"
             direction = 1 if seg_idx % 2 == 0 else -1
             success = _render_sm_segment(
-                char_layers, scene_img, audio_file, out_path, duration,
+                char_layers, host_bg_path, audio_file, out_path, duration,
                 frames_dir, cache_dir,
                 overlay_path=None,
                 seed=hash(seg_type) % 1000 + seg_idx,
                 direction=direction, fade_af=fade_af,
             )
             if not success:
-                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
+                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", host_bg_path,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                        "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps=24",
                        "-map", "0:v:0", "-map", "1:a:0",
@@ -485,35 +488,35 @@ def compose_quest(
                        out_path]
 
         elif seg_type == "dialogue":
-            # Stop-motion: build char_layers from on_screen field
-            dialogue = script.get("dialogue", [])
+            # Pick scene background for this dialogue line
+            bg_idx = (dialogue_seg_idx // 5) % n_scene_bgs
+            line_bg = scene_bgs[bg_idx]
+            dialogue_seg_idx += 1
+
             line_data = dialogue[audio_idx] if audio_idx < len(dialogue) else {}
             speaker = line_data.get("speaker", "char_a")
             on_screen = line_data.get("on_screen", [speaker])
 
             if char_pose_map:
-                # Build multi-character layers from on_screen
                 char_layers = []
                 for char_key in on_screen:
                     poses = char_pose_map.get(char_key, [])
                     if not poses:
-                        poses = char_pose_map.get("char_a", [scene_img])
+                        poses = char_pose_map.get("char_a", [line_bg])
                     char_layers.append({
                         "poses": poses,
                         "is_speaker": (char_key == speaker),
                     })
-                # If on_screen is empty (scene-only shot), char_layers is []
             else:
-                # Fallback: single speaker (legacy mode)
                 idx = min(audio_idx, len(pose_images) - 1) if pose_images else 0
-                line_poses = pose_images[idx] if pose_images and idx < len(pose_images) else [scene_img]
+                line_poses = pose_images[idx] if pose_images and idx < len(pose_images) else [line_bg]
                 char_layers = [{"poses": line_poses, "is_speaker": True}]
 
             frames_dir = work / "sm_frames" / f"dialogue_{audio_idx}"
             cache_dir = work / "sm_frames"
             direction = 1 if audio_idx % 2 == 0 else -1
             success = _render_sm_segment(
-                char_layers, scene_img, audio_file, out_path, duration,
+                char_layers, line_bg, audio_file, out_path, duration,
                 frames_dir, cache_dir,
                 overlay_path=None,
                 seed=audio_idx * 7 + 13,
