@@ -1,19 +1,16 @@
 """Quest FFmpeg video composition — task-hook slow listening, stop-motion mode.
 
 Structure:
-  Ch1: Title Card    (scene image + big title overlay, 5s silence)
-  Ch2: Welcome       (host stop-motion + welcome audio)
-  Ch3: Hook / Intro  (host stop-motion + listening-task card + narrator audio)
-  Ch4: Slow Dialogue (4 phases: buildup->core->reveal->review, per-line
-      stop-motion with randomized pose schedule + slow TTS + burned subtitles)
-  Ch5: Outro & CTA   (host stop-motion + answer card + narrator audio)
+  Ch1: Welcome       (host stop-motion + subtitle)
+  Ch2: Hook / Intro  (host stop-motion + subtitle)
+  Ch3: Slow Dialogue (4 phases: buildup->core->reveal->review, per-line
+      stop-motion with randomized pose schedule + subtitles)
+  Ch4: Outro & CTA   (host stop-motion + subtitle)
 
-The host character (节目主) appears on-screen in Welcome, Hook, and Outro
-segments with stop-motion animation using the host's pose atlas. Dialogue
-segments use each speaker's pose atlas. All segments use randomized pose
-scheduling (variable hold times 0.5-2.0s) for natural-looking motion.
-
-Reuses render helpers from parent video_compose.py.
+All segments (welcome/hook/dialogue/outro) render as stop-motion with
+subtitles — no title card, no overlay cards. The host character (节目主)
+appears on-screen in Welcome, Hook, and Outro segments. Dialogue segments
+use each speaker's pose atlas with multi-character support via on_screen.
 """
 import os
 import sys
@@ -448,7 +445,7 @@ def compose_quest(
         out_path = str(tmp_dir / f"seg_{seg_idx:03d}.mp4")
         seg_idx += 1
 
-        cmd = None  # FFmpeg cmd for static segments; None for stop-motion segments
+        cmd = None  # FFmpeg cmd for static fallback; None for stop-motion segments
         audio_file = None
         audio_dur = seg.get("audio_dur", duration - pad)
 
@@ -460,40 +457,23 @@ def compose_quest(
             audio_file = narration.get("hook")
         elif seg_type == "outro":
             audio_file = narration.get("outro")
-        elif seg_type == "title_card":
-            audio_dur = duration
 
         fade_af = f"afade=t=in:st=0:d=0.05,afade=t=out:st={max(0, audio_dur-0.05):.2f}:d=0.05"
 
-        # --- Build FFmpeg command per segment type ---
-        if seg_type == "title_card":
-            # Static scene + big title overlay + silence (static-mode pattern)
-            title_en = seg.get("subtitle_en", "")
-            title_zh = seg.get("subtitle_zh", "")
-            title_overlay = str(static_dir / "title_overlay.png")
-            _render_title_card(title_en, title_zh, "", scene_img, title_overlay)
-            cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
-                   "-i", title_overlay,
-                   "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                   "-t", f"{duration:.3f}",
-                   "-filter_complex", f"[0:v]{VF_NORM}[bg];[bg][1:v]overlay=0:0[v]",
-                   "-map", "[v]", "-map", "2:a",
-                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
-                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                   out_path]
-
-        elif seg_type == "welcome":
-            # Host stop-motion + welcome audio
+        # --- All segment types use stop-motion rendering (host or dialogue chars) ---
+        if seg_type in ("welcome", "hook_intro", "outro"):
+            # Host stop-motion, no overlay — subtitles burned later like dialogue
             h_poses = host_poses or [scene_img]
             char_layers = [{"poses": h_poses, "is_speaker": True}]
-            frames_dir = work / "sm_frames" / f"welcome_{seg_idx}"
+            frames_dir = work / "sm_frames" / f"{seg_type}_{seg_idx}"
             cache_dir = work / "sm_frames"
+            direction = 1 if seg_idx % 2 == 0 else -1
             success = _render_sm_segment(
                 char_layers, scene_img, audio_file, out_path, duration,
                 frames_dir, cache_dir,
                 overlay_path=None,
-                seed=hash("welcome") % 1000,
-                direction=1, fade_af=fade_af,
+                seed=hash(seg_type) % 1000 + seg_idx,
+                direction=direction, fade_af=fade_af,
             )
             if not success:
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
@@ -501,59 +481,6 @@ def compose_quest(
                        "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps=24",
                        "-map", "0:v:0", "-map", "1:a:0",
                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                       out_path]
-
-        elif seg_type == "hook_intro":
-            # Host stop-motion + listening-task card overlay + narrator audio
-            hook_overlay = str(static_dir / "hook_overlay.png")
-            _render_hook_frame(hook_en, question_en, question_zh, scene_img,
-                               hook_overlay)
-            h_poses = host_poses or [scene_img]
-            char_layers = [{"poses": h_poses, "is_speaker": True}]
-            frames_dir = work / "sm_frames" / f"hook_{seg_idx}"
-            cache_dir = work / "sm_frames"
-            success = _render_sm_segment(
-                char_layers, scene_img, audio_file, out_path, duration,
-                frames_dir, cache_dir,
-                overlay_path=hook_overlay,
-                seed=hash("hook") % 1000,
-                direction=1, fade_af=fade_af,
-            )
-            if not success:
-                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
-                       "-i", hook_overlay,
-                       "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                       "-t", f"{duration:.3f}",
-                       "-filter_complex", f"[0:v]{VF_NORM}[bg];[bg][1:v]overlay=0:0[v]",
-                       "-map", "[v]", "-map", "2:a",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
-                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                       out_path]
-
-        elif seg_type == "outro":
-            # Host stop-motion + answer/CTA card overlay + narrator audio
-            outro_overlay = str(static_dir / "outro_overlay.png")
-            _render_outro_frame(question_en, question_zh, scene_img, outro_overlay)
-            h_poses = host_poses or [scene_img]
-            char_layers = [{"poses": h_poses, "is_speaker": True}]
-            frames_dir = work / "sm_frames" / f"outro_{seg_idx}"
-            cache_dir = work / "sm_frames"
-            success = _render_sm_segment(
-                char_layers, scene_img, audio_file, out_path, duration,
-                frames_dir, cache_dir,
-                overlay_path=outro_overlay,
-                seed=hash("outro") % 1000,
-                direction=-1, fade_af=fade_af,
-            )
-            if not success:
-                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
-                       "-i", outro_overlay,
-                       "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                       "-t", f"{duration:.3f}",
-                       "-filter_complex", f"[0:v]{VF_NORM}[bg];[bg][1:v]overlay=0:0[v]",
-                       "-map", "[v]", "-map", "2:a",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        out_path]
 

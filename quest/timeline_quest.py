@@ -1,11 +1,12 @@
 """Quest timeline builder + SRT generator for task-hook slow listening videos.
 
-Structure (mirrors the reference slow-listening video):
-  Ch1: Title Card      (5s, scene image + big title overlay)
-  Ch2: Welcome         (narrator host on-screen, ~4s welcome line)
-  Ch3: Hook / Intro    (narrator host on-screen ~60-90s: reassure slow speech + listening task)
-  Ch4: Slow Dialogue   (4 phases in one continuous flow: buildup -> core -> reveal -> review)
-  Ch5: Outro & CTA     (narrator host on-screen ~60-90s: repeat question + comment + subscribe)
+Structure:
+  Ch1: Welcome         (host on-screen, welcome line + subtitle)
+  Ch2: Hook / Intro    (host on-screen, narrator intro + subtitle)
+  Ch3: Slow Dialogue   (4 phases: buildup -> core -> reveal -> review, subtitles)
+  Ch4: Outro & CTA     (host on-screen, narrator outro + subtitle)
+
+No title card — welcome/hook/outro use subtitle display like dialogue lines.
 """
 import sys
 from pathlib import Path
@@ -48,28 +49,19 @@ def build_quest_timeline(script: dict, dialogue_durations: list[float],
             "dialogue_idx": d_idx,
         })
 
-    # 1. Title card (5s)
-    title_en = script.get("title", "")
-    title_zh = script.get("title_zh", script.get("intro_zh", ""))
-    scene_zh = script.get("scene_zh", "")
-    if title_en:
-        _add("title_card", 5.0, title_en, title_zh, audio_idx=0, image_idx=0)
-        timeline[-1]["scene_zh"] = scene_zh
-
-    # 2. Welcome (host on-screen, ~4s)
+    # 1. Welcome (host on-screen, ~4s)
     welcome_en = script.get("welcome_en", "")
     if welcome_en:
         _add("welcome", 4.0, welcome_en, script.get("welcome_zh", ""),
              audio_idx=-1, image_idx=0, speaker="host")
 
-    # 3. Hook / intro (host on-screen, narrator) — duration enriched from
-    #    narration audio later by _enrich_timeline
+    # 2. Hook / intro (host on-screen, narrator)
     hook_en = script.get("hook_intro_en", "")
     if hook_en:
         _add("hook_intro", 10.0, hook_en, script.get("hook_intro_zh", ""),
              audio_idx=-1, image_idx=0, speaker="host")
 
-    # 4. Slow dialogue — all lines in order (phases stay contiguous)
+    # 3. Slow dialogue — all lines in order (phases stay contiguous)
     for i, line in enumerate(dialogue):
         dur = dialogue_durations[i] if i < len(dialogue_durations) else 3.0
         _add("dialogue", dur, line.get("text", ""), line.get("zh", ""),
@@ -78,7 +70,7 @@ def build_quest_timeline(script: dict, dialogue_durations: list[float],
         seg = timeline[-1]
         seg["phase"] = line.get("phase", "buildup")
 
-    # 5. Outro & CTA (host on-screen, narrator)
+    # 4. Outro & CTA (host on-screen, narrator)
     if outro:
         outro_dur = min(max(len(outro) * 0.08, 6.0), 10.0)
         _add("outro", outro_dur, outro, outro_zh, audio_idx=0, image_idx=0,
@@ -90,7 +82,7 @@ def build_quest_timeline(script: dict, dialogue_durations: list[float],
 def build_srt_from_timeline_quest(timeline: list[dict], gap: float = 0.0) -> str:
     """Build SRT from quest timeline. Timestamps match video exactly.
 
-    Skips title_card / hook_intro / outro — their text is baked into big
-    overlay cards in compose. Only dialogue lines become subtitles.
+    All segments (welcome, hook_intro, dialogue, outro) get subtitles —
+    they all display as sentence-by-sentence subtitles like dialogue lines.
     """
-    return build_srt(timeline, skip_types={"title_card", "welcome", "hook_intro", "outro"}, gap=gap)
+    return build_srt(timeline, skip_types=set(), gap=gap)

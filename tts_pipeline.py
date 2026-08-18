@@ -40,8 +40,8 @@ def generate_tts(script, dialogue, audio_dir, results, enhanced=False, quest=Fal
                 narration[name] = path
                 print(f"  [TTS] {name}: {dur:.1f}s")
 
-    # Dialogue English (character voices; quest: -25% extra slow for beginners)
-    dialogue_rate = "-25%" if quest else "-15%"
+    # Dialogue English (character voices; quest: normal speed)
+    dialogue_rate = "0%" if quest else "-15%"
     normal_paths = []
     dialogue_durations = []
     for i, line in enumerate(dialogue):
