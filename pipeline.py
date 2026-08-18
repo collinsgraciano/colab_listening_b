@@ -63,6 +63,7 @@ from image_gen import (
     generate_images as _generate_images,
     generate_dialogue_images as _generate_dialogue_images,
     generate_pose_images as _generate_pose_images,
+    generate_quest_atlases as _generate_quest_atlases,
 )
 from timeline_enrich import enrich_timeline as _enrich_timeline
 from group_audio import build_group_info as _build_group_info
@@ -327,9 +328,13 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         if is_static or is_quest:
             char_scene_cdn = image_urls.get("char_scene.png", "")
             char_scene_c_cdn = image_urls.get("char_scene_c.png", "")
-            _generate_dialogue_images(
-                dialogue, img_dir, char_a_desc, char_b_desc, scene,
-                is_quest, char_scene_cdn, char_scene_c_cdn, tts_thread)
+            if is_quest:
+                # Quest uses per-character atlas (3 chars × 4 poses)
+                _generate_quest_atlases(script, img_dir, tts_thread)
+            else:
+                _generate_dialogue_images(
+                    dialogue, img_dir, char_a_desc, char_b_desc, scene,
+                    is_quest, char_scene_cdn, char_scene_c_cdn, tts_thread)
         elif is_stop_motion:
             char_a_ref_cdn = image_urls.get("char_a_ref.png", "")
             char_b_ref_cdn = image_urls.get("char_b_ref.png", "")
@@ -605,11 +610,24 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
         )
     elif args.structure == "quest":
         from quest.video_compose_quest import compose_quest
-        n = len(script.get("dialogue", []))
-        dialogue_images = [str(dirs["images"] / f"dialogue_img_{i}.png") for i in range(n)]
+        # Build per-line pose_images from 3 character atlases
+        # pose_images[i] = [pose_{speaker}_{j}.png for j in 0..3]
+        char_pose_map = {}  # cache per-character pose paths
+        for ck in ("char_a", "char_b", "char_c"):
+            poses = [str(dirs["images"] / f"pose_{ck}_{j}.png") for j in range(4)]
+            if all(os.path.exists(p) for p in poses):
+                char_pose_map[ck] = poses
+        dialogue = script.get("dialogue", [])
+        pose_images = []
+        for line in dialogue:
+            speaker = line.get("speaker", "char_a")
+            poses = char_pose_map.get(speaker, [])
+            if not poses:
+                poses = char_pose_map.get("char_a", [scene_img])
+            pose_images.append(poses)
         final_path = compose_quest(
             work_dir=str(work_dir),
-            dialogue_images=dialogue_images,
+            pose_images=pose_images,
             timeline=timeline,
             script=script,
             narration=narration,

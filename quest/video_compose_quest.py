@@ -23,6 +23,7 @@ from video_compose import (
     _render_title_card,
     _render_practice_intro,
 )
+from PIL import Image
 from media_utils import (
     FONT_EN, FONT_ZH, VF_NORM,
     concat_segments, burn_subtitles, apply_final_loudnorm,
@@ -182,7 +183,7 @@ def _render_outro_frame(question_en, question_zh, scene_img_path,
 
 def compose_quest(
     work_dir: str,
-    dialogue_images: list[str],
+    pose_images: list[list[str]],
     timeline: list[dict],
     script: dict,
     narration: dict,
@@ -192,11 +193,11 @@ def compose_quest(
     pad: float = 5.0,
     progress_cb=None,
 ) -> str:
-    """Compose the final quest (task-hook slow listening) video — all images.
+    """Compose the final quest (task-hook slow listening) video — stop-motion.
 
     Args:
         work_dir: Working directory for temp files and output.
-        dialogue_images: Per-line dialogue image paths (dialogue_img_{i}.png).
+        pose_images: Per-line list of pose image paths (pose_{speaker}_{j}.png).
         timeline: From build_quest_timeline (audio_dur enriched).
         script: Quest script dict.
         narration: {"hook": path, "outro": path}.
@@ -325,25 +326,110 @@ def compose_quest(
                        out_path]
 
         elif seg_type == "dialogue":
-            # Per-line static image + slow TTS audio
-            idx = min(audio_idx, len(dialogue_images) - 1) if dialogue_images else 0
-            d_img = dialogue_images[idx] if dialogue_images and idx < len(dialogue_images) else scene_img
-            if not os.path.exists(d_img):
-                d_img = scene_img
+            # Stop-motion: render frames from character poses + background
+            idx = min(audio_idx, len(pose_images) - 1) if pose_images else 0
+            line_poses = pose_images[idx] if pose_images and idx < len(pose_images) else []
+            if not line_poses:
+                line_poses = [scene_img]
+
+            # Use stop_motion renderer for this dialogue segment
+            from stop_motion import (
+                remove_bg, normalize_pose, generate_morph_frames,
+                render_frame, compute_landing, POSE_CENTER_Y, DELIVERY_FPS,
+            )
+            frames_dir = work / "sm_frames" / f"dialogue_{audio_idx}"
+            frames_dir.mkdir(parents=True, exist_ok=True)
+
+            # Process poses: rembg + normalize (cache per character)
+            processed = []
+            bg_img = None
+            for p_path in line_poses:
+                if not os.path.exists(p_path):
+                    processed.append(None)
+                    continue
+                cache_path = work / "sm_frames" / f"cutout_{Path(p_path).stem}.png"
+                if cache_path.exists():
+                    processed.append(Image.open(cache_path).convert("RGBA"))
+                else:
+                    raw = Image.open(p_path)
+                    alpha = remove_bg(raw)
+                    norm = normalize_pose(alpha)
+                    norm.save(str(cache_path))
+                    processed.append(norm)
+            processed = [p for p in processed if p is not None]
+            if not processed:
+                processed = [Image.new("RGBA", (1280, 720), (0,0,0,0))]
+
+            # Load background
+            if bg_img is None:
+                bg_img = Image.open(scene_img).convert("RGBA").resize((1280, 720))
+
+            # Render frames with pose cycling + landing transform
+            total_frames = round(duration * DELIVERY_FPS)
+            n_poses = len(processed)
+            direction = 1 if audio_idx % 2 == 0 else -1
+            cx = 1280 / 2
+            cy = POSE_CENTER_Y
+
+            # Pre-generate morph frames if >1 pose and cv2 available
+            morph_frames = []
+            if n_poses >= 2:
+                try:
+                    morph_frames = generate_morph_frames(processed[0], processed[1], n_frames=5)
+                except Exception:
+                    morph_frames = []
+            morph_n = len(morph_frames)
+            morph_dur = 0.2 if morph_n > 0 else 0
+
+            for fidx in range(total_frames):
+                t = fidx / DELIVERY_FPS
+                # Cycle through poses
+                if n_poses == 1:
+                    pose = processed[0]
+                    landing = compute_landing(t, direction=direction)
+                elif morph_n > 0 and t < morph_dur:
+                    mi = min(morph_n - 1, int(t / morph_dur * morph_n))
+                    pose = morph_frames[mi]
+                    landing = {"scale":0,"x":0,"y":0,"rotation":0}
+                else:
+                    pose_idx = min(n_poses - 1, int(t / max(duration, 0.01) * n_poses))
+                    pose = processed[pose_idx]
+                    local_t = t - (pose_idx * duration / n_poses)
+                    landing = compute_landing(local_t, direction=direction)
+
+                scale = 1.0 + landing["scale"]
+                frame = render_frame(bg_img, pose, cx + landing["x"],
+                                     cy + landing["y"], scale, landing["rotation"],
+                                     centered=True)
+                frame.save(str(frames_dir / f"frame-{fidx:04d}.png"), compress_level=2)
+
+            # Encode frames → mp4
+            frame_pattern = str(frames_dir / "frame-%04d.png")
             if audio_file and os.path.exists(audio_file):
-                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", d_img, "-i", audio_file,
+                cmd = ["ffmpeg", "-y",
+                       "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
+                       "-i", audio_file,
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", VF_NORM, "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
                        out_path]
             else:
-                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", d_img,
+                cmd = ["ffmpeg", "-y",
+                       "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", VF_NORM, "-r", "24",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        out_path]
+            # Run and cleanup frames
+            try:
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                if r.returncode != 0:
+                    print(f"  [Quest] FFmpeg error dialogue {audio_idx}: {r.stderr[-200:]}")
+            except Exception as e:
+                print(f"  [Quest] Error dialogue {audio_idx}: {e}")
+            shutil.rmtree(frames_dir, ignore_errors=True)
         else:
             # Unknown segment type — silent static placeholder keeps timeline intact
             cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,

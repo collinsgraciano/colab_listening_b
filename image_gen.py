@@ -313,3 +313,128 @@ def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
             fut.result()
 
     print(f"  [PoseAtlas] Done — {n} atlases → {n*4} pose images.")
+
+
+def generate_quest_atlases(script, img_dir, tts_thread):
+    """Generate 3 character pose atlases (2×2 grid each) for quest mode.
+
+    One atlas per character (char_a, char_b, char_c), each containing 4 poses:
+    speaking, listening, thinking, reacting. Split into pose_{char}_{j}.png.
+    Only 3 API calls total — guarantees consistency across all 48 dialogue lines.
+    """
+    from PIL import Image as PILImage
+
+    chars = [
+        ("char_a", script.get("char_a_description", "friendly young man")),
+        ("char_b", script.get("char_b_description", "friendly young woman")),
+        ("char_c", script.get("char_c_description", "friendly staff member")),
+    ]
+    # Also generate per-character half-body reference images
+    ref_urls = {}
+    for char_key, char_desc in chars:
+        ref_path = str(img_dir / f"{char_key}_ref.png")
+        if not os.path.exists(ref_path):
+            print(f"  [QuestRef] Generating {char_key}_ref...")
+            try:
+                result = call_tool("generate_image", {
+                    "prompt": (f"Character reference, {char_desc}, single character, "
+                               f"plain white background, half-body close-up, waist up, "
+                               f"front view, 3D cartoon style, no text, no background scene"),
+                    "provider": "seedream",
+                    "image_size": {"width": 1280, "height": 720},
+                    "output_format": "png",
+                })
+                task_id = parse_task_id(result)
+                data = poll_task(task_id, interval=10, max_wait=600)
+                url = data.get("url", "")
+                if url:
+                    download_file(url, ref_path)
+                    ref_urls[char_key] = url
+                    print(f"    [QuestRef] Downloaded: {char_key}_ref.png")
+            except Exception as e:
+                if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
+                    if tts_thread:
+                        tts_thread.join(timeout=5)
+                    sys.exit(1)
+                print(f"    [QuestRef] ERROR: {e}")
+        else:
+            # Re-upload for CDN URL
+            try:
+                upload_result = call_tool("file_upload", {"file_path": ref_path})
+                for item in upload_result.get("result", {}).get("content", []):
+                    if item.get("type") == "resource":
+                        import json
+                        res_json = json.loads(item["resource"]["text"])
+                        ref_urls[char_key] = res_json.get("file_url", "")
+            except Exception:
+                pass
+
+    # Generate 3 atlases
+    for char_key, char_desc in chars:
+        all_exist = all(
+            os.path.exists(str(img_dir / f"pose_{char_key}_{j}.png"))
+            for j in range(4)
+        )
+        if all_exist:
+            print(f"  [QuestAtlas] {char_key} poses already exist, skipping")
+            continue
+
+        atlas_path = str(img_dir / f"pose_atlas_{char_key}.png")
+        atlas_prompt = (
+            f"2×2 grid character pose sheet, four poses of the same character, "
+            f"{char_desc}, "
+            f"top-left: speaking with mouth open and expressive gesture, "
+            f"top-right: listening with a slight smile, relaxed posture, "
+            f"bottom-left: thinking with hand on chin, "
+            f"bottom-right: surprised with raised eyebrows, "
+            f"half-body close-up, waist up, all four poses same character same outfit, "
+            f"plain white background, 3D cartoon style, "
+            f"cel-shaded with thin clean black outline tightly hugging the character silhouette, "
+            f"no props, no objects, no scene, no text"
+        )
+        print(f"  [QuestAtlas] Generating atlas for {char_key}...")
+        try:
+            gen_params = {
+                "prompt": atlas_prompt,
+                "provider": "seedream",
+                "image_size": {"width": 1280, "height": 1280},
+                "output_format": "png",
+            }
+            ref_cdn = ref_urls.get(char_key, "")
+            if ref_cdn:
+                gen_params["image_urls"] = ref_cdn
+            result = call_tool("generate_image", gen_params)
+            task_id = parse_task_id(result)
+            data = poll_task(task_id, interval=10, max_wait=600)
+            url = data.get("url", "")
+            if not url:
+                print(f"    [QuestAtlas] WARNING: No URL for {char_key}")
+                continue
+            download_file(url, atlas_path)
+            print(f"    [QuestAtlas] Downloaded: pose_atlas_{char_key}.png")
+
+            atlas = PILImage.open(atlas_path).convert("RGBA")
+            w, h = atlas.size
+            hw, hh = w // 2, h // 2
+            quads = [
+                (0, 0, hw, hh), (hw, 0, w, hh),
+                (0, hh, hw, h), (hw, hh, w, h),
+            ]
+            for j, (l, t, r, b) in enumerate(quads):
+                cell = atlas.crop((l, t, r, b))
+                out_path = str(img_dir / f"pose_{char_key}_{j}.png")
+                cell.save(out_path)
+                print(f"    [QuestAtlas] Split: pose_{char_key}_{j}.png ({cell.size})")
+
+            if os.path.exists(atlas_path):
+                os.remove(atlas_path)
+        except RuntimeError as e:
+            if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
+                if tts_thread:
+                    tts_thread.join(timeout=5)
+                sys.exit(1)
+            print(f"    [QuestAtlas] ERROR {char_key}: {e}")
+        except Exception as e:
+            print(f"    [QuestAtlas] ERROR {char_key}: {e}")
+
+    print(f"  [QuestAtlas] Done — 3 characters × 4 poses = 12 pose images.")
