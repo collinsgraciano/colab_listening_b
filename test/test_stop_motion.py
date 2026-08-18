@@ -7,8 +7,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from PIL import Image
 from stop_motion import (
-    remove_white_bg, normalize_pose, render_frame, compute_landing,
-    generate_morph_frames, quantize, MOTION_FPS, TARGET_W, TARGET_H
+    remove_bg, normalize_pose, render_frame, compute_landing,
+    generate_morph_frames, quantize, MOTION_FPS, TARGET_W, TARGET_H,
+    _HAS_REMBG,
 )
 
 TEST_DIR = Path(__file__).parent
@@ -20,10 +21,10 @@ def main():
         print("ERROR: dialogue_test.png not found")
         sys.exit(1)
 
-    print("1. Loading and removing white background...")
+    print(f"1. Removing background (rembg: {_HAS_REMBG})...")
     raw = Image.open(IMG_PATH)
     print(f"   Raw size: {raw.size}")
-    alpha = remove_white_bg(raw)
+    alpha = remove_bg(raw)
     # Count transparent pixels
     pixels = list(alpha.getdata())
     transparent = sum(1 for p in pixels if p[3] == 0)

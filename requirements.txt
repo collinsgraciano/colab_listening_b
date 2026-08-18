@@ -10,3 +10,5 @@ ordered_set
 jieba
 opencv-python
 numpy
+rembg
+onnxruntime

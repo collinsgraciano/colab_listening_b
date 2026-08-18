@@ -67,15 +67,32 @@ SHADOW_OFFSET_Y = 10
 
 
 # ---------------------------------------------------------------------------
-# Phase 2: White-background removal + pose normalization
+# Phase 2: AI background removal (rembg U2-Net) + pose normalization
 # ---------------------------------------------------------------------------
 
-def remove_white_bg(img: Image.Image, threshold: int = 238) -> Image.Image:
-    """Remove near-white background from a PIL image → RGBA with transparency.
+# Try importing rembg for AI-based background removal. Falls back to
+# threshold-based white-bg removal if rembg is not installed.
+try:
+    from rembg import remove as _rembg_remove
+    _HAS_REMBG = True
+except ImportError:
+    _HAS_REMBG = False
 
-    Uses a luminance threshold: pixels brighter than *threshold* in all RGB
-    channels become transparent. Anti-aliased edges get partial alpha.
+
+def remove_bg(img: Image.Image) -> Image.Image:
+    """Remove background from a PIL image → RGBA with transparency.
+
+    Uses rembg (U2-Net AI model) when available for high-quality matting.
+    Falls back to luminance-threshold white removal if rembg is not installed.
     """
+    if _HAS_REMBG:
+        result = _rembg_remove(img)
+        return result.convert("RGBA")
+    return _remove_white_bg_fallback(img)
+
+
+def _remove_white_bg_fallback(img: Image.Image, threshold: int = 238) -> Image.Image:
+    """Threshold-based white background removal (fallback when rembg unavailable)."""
     rgba = img.convert("RGBA")
     data = rgba.load()
     w, h = rgba.size
@@ -83,10 +100,8 @@ def remove_white_bg(img: Image.Image, threshold: int = 238) -> Image.Image:
         for x in range(w):
             r, g, b, a = data[x, y]
             if r >= threshold and g >= threshold and b >= threshold:
-                # Fully transparent
                 data[x, y] = (r, g, b, 0)
             elif r >= threshold - 30 and g >= threshold - 30 and b >= threshold - 30:
-                # Near-white → partial transparency (anti-alias feather)
                 whiteness = min(r, g, b)
                 alpha = max(0, int(255 * (1 - (whiteness - (threshold - 30)) / 30)))
                 data[x, y] = (r, g, b, alpha)
@@ -376,7 +391,7 @@ def compose_stop_motion(
                 print(f"  [StopMotion] WARNING: pose image {p_path} not found, skipping")
                 continue
             raw = Image.open(p_path)
-            alpha = remove_white_bg(raw)
+            alpha = remove_bg(raw)
             normalized = normalize_pose(alpha)
             line_poses_processed.append(normalized)
         if not line_poses_processed:
