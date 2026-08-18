@@ -186,3 +186,75 @@ def generate_dialogue_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
         futs = [pool.submit(_gen_one, i, line) for i, line in enumerate(dialogue)]
         for fut in as_completed(futs):
             fut.result()
+
+
+def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
+                          char_scene_cdn, tts_thread):
+    """Generate per-line character pose images for stop-motion mode (2 per line).
+
+    Each dialogue line's "poses" array contains 2 pose prompt fragments.
+    Images are generated on plain white background for chroma-key removal.
+    Saves as pose_{line_idx}_{pose_idx}.png.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    n = len(dialogue)
+    print(f"  [Pose] Generating {n}×2 pose images for stop-motion (5 concurrent)...")
+
+    # Build all (line_idx, pose_idx, prompt) triples
+    tasks = []
+    for i, line in enumerate(dialogue):
+        poses = line.get("poses", [])
+        if not poses:
+            # Fallback: derive from image_prompt
+            img_prompt = line.get("image_prompt", f"{char_a_desc} at {scene}")
+            poses = [img_prompt, img_prompt]
+        for j, pose_prompt in enumerate(poses[:2]):  # max 2 poses
+            tasks.append((i, j, pose_prompt))
+
+    def _gen_one(line_idx, pose_idx, pose_prompt):
+        out_path = str(img_dir / f"pose_{line_idx}_{pose_idx}.png")
+        if os.path.exists(out_path):
+            print(f"    [Pose] pose_{line_idx}_{pose_idx} already exists, skipping")
+            return (line_idx, pose_idx, True)
+        # Ensure white background for chroma-key removal
+        if "white background" not in pose_prompt.lower():
+            pose_prompt = pose_prompt.rstrip(".") + ", plain white background, no background scene, 3D cartoon style, 16:9"
+        print(f"    [Pose] Generating pose_{line_idx}_{pose_idx}...")
+        try:
+            gen_params = {
+                "prompt": pose_prompt,
+                "provider": "frontier",
+                "quality": "high",
+                "image_size": "landscape_16_9",
+                "output_format": "png",
+            }
+            if char_scene_cdn:
+                gen_params["image_urls"] = char_scene_cdn
+            result = call_tool("generate_image", gen_params)
+            task_id = parse_task_id(result)
+            data = poll_task(task_id, interval=10, max_wait=600)
+            url = data.get("url", "")
+            if url:
+                download_file(url, out_path)
+                print(f"      [Pose] Downloaded: pose_{line_idx}_{pose_idx}.png")
+                return (line_idx, pose_idx, True)
+            print(f"      [Pose] WARNING: No URL for pose_{line_idx}_{pose_idx}")
+            return (line_idx, pose_idx, False)
+        except RuntimeError as e:
+            if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
+                print("\n  [FATAL] 所有 MCP Token 积分已耗尽！")
+                if tts_thread:
+                    tts_thread.join(timeout=5)
+                sys.exit(1)
+            print(f"      [Pose] ERROR pose_{line_idx}_{pose_idx}: {e}")
+            return (line_idx, pose_idx, False)
+        except Exception as e:
+            print(f"      [Pose] ERROR pose_{line_idx}_{pose_idx}: {e}")
+            return (line_idx, pose_idx, False)
+
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futs = [pool.submit(_gen_one, li, pi, pp) for li, pi, pp in tasks]
+        for fut in as_completed(futs):
+            fut.result()
+
+    print(f"  [Pose] Done — {len(tasks)} pose images processed.")

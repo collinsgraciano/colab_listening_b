@@ -8,3 +8,5 @@ cn2an
 pypinyin
 ordered_set
 jieba
+opencv-python
+numpy

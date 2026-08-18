@@ -62,6 +62,7 @@ from image_gen import (
     check_step2_resume as _check_step2_resume,
     generate_images as _generate_images,
     generate_dialogue_images as _generate_dialogue_images,
+    generate_pose_images as _generate_pose_images,
 )
 from timeline_enrich import enrich_timeline as _enrich_timeline
 from group_audio import build_group_info as _build_group_info
@@ -170,8 +171,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=None, help="SenseNova API key (or set SENSENOVA_API_KEY env var)")
     parser.add_argument("--model", default=None, choices=["deepseek-v4-flash", "glm-5.2"],
                         help="SenseNova LLM model: 'deepseek-v4-flash' (default) or 'glm-5.2'")
-    parser.add_argument("--structure", default="original", choices=["original", "enhanced", "static", "static_animated", "quest"],
-                        help="Video structure: 'original' (4-chapter, video clips), 'enhanced' (7-chapter with vocab+quiz+slow), 'static' (all images, no video generation), 'static_animated' (static + landing-transform micro-animation on dialogue), or 'quest' (task-hook slow listening, all images, 3-phase dialogue)")
+    parser.add_argument("--structure", default="original", choices=["original", "enhanced", "static", "static_animated", "stop_motion", "quest"],
+                        help="Video structure: 'original' (4-chapter, video clips), 'enhanced' (7-chapter), 'static' (all images), 'static_animated' (static + landing transform), 'stop_motion' (multi-pose + optical flow), or 'quest' (task-hook listening)")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
     parser.add_argument("--no-4k", dest="no_4k", action="store_true", help="Skip the final 4K upscaling step")
     parser.add_argument("--upscale-timeout", type=int, default=3600, help="Timeout in seconds for 4K upscale (default 3600)")
@@ -277,6 +278,7 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
     n = len(dialogue)
     is_enhanced = (args.structure == "enhanced")
     is_static = (args.structure in ("static", "static_animated"))
+    is_stop_motion = (args.structure == "stop_motion")
     is_quest = (args.structure == "quest")
     img_dir, audio_dir, clips_dir = dirs["images"], dirs["audio"], dirs["clips"]
 
@@ -322,6 +324,11 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
             _generate_dialogue_images(
                 dialogue, img_dir, char_a_desc, char_b_desc, scene,
                 is_quest, char_scene_cdn, char_scene_c_cdn, tts_thread)
+        elif is_stop_motion:
+            char_scene_cdn = image_urls.get("char_scene.png", "")
+            _generate_pose_images(
+                dialogue, img_dir, char_a_desc, char_b_desc, scene,
+                char_scene_cdn, tts_thread)
 
         print("  [Image] All images done. Waiting for TTS...")
 
@@ -389,7 +396,7 @@ def _step3_clips(args, checkpoint: dict, work_dir: Path, dirs: dict, script: dic
     dialogue_durations = tts_results.get("dialogue_durations", [])
     audio_dir, clips_dir = dirs["audio"], dirs["clips"]
 
-    if args.structure in ("static", "static_animated", "quest"):
+    if args.structure in ("static", "static_animated", "stop_motion", "quest"):
         print(f"Step 3: Skipped ({args.structure} mode — no video generation)")
         _save_checkpoint(work_dir, "step3_video")
         print(f"  TTS: {len(normal_paths)} EN + {sum(1 for p in zh_paths if p)} ZH")
@@ -622,6 +629,33 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             pad=args.pad,
             progress_cb=progress_cb,
             animated=(args.structure == "static_animated"),
+        )
+    elif args.structure == "stop_motion":
+        from stop_motion import compose_stop_motion
+        n = len(script.get("dialogue", []))
+        pose_images = []
+        for i in range(n):
+            line_poses = []
+            for j in range(2):
+                p = str(dirs["images"] / f"pose_{i}_{j}.png")
+                if os.path.exists(p):
+                    line_poses.append(p)
+            if not line_poses:
+                line_poses = [scene_img]
+            pose_images.append(line_poses)
+        final_path = compose_stop_motion(
+            work_dir=str(work_dir),
+            pose_images=pose_images,
+            background_img=scene_img,
+            timeline=timeline,
+            script=script,
+            narration=narration,
+            normal_paths=normal_paths,
+            zh_paths=zh_paths,
+            scene_img=scene_img,
+            srt_dir=str(sub_dir),
+            pad=args.pad,
+            progress_cb=progress_cb,
         )
     else:
         final_path = compose_listening(

@@ -54,6 +54,12 @@ def _quest_compose(**kwargs):
     return compose_quest(**kwargs)
 
 
+# --- Stop Motion (lazy import) ---
+def _stop_motion_compose(**kwargs):
+    from stop_motion import compose_stop_motion
+    return compose_stop_motion(**kwargs)
+
+
 STRUCTURES = {
     "original": {
         "generate_script": generate_listening_script,
@@ -95,6 +101,17 @@ STRUCTURES = {
         "needs_zh_tts": True,
         "needs_dialogue_images": True,
         "animated": True,
+    },
+    "stop_motion": {
+        "generate_script": generate_listening_script,
+        "build_timeline": lambda script, ddur, pad, pd: build_listening_timeline(
+            script, ddur, pad=pad, practice_duration=pd),
+        "build_srt": lambda tl, gap=0.0: build_srt_from_timeline(tl, gap=gap),
+        "compose": _stop_motion_compose,
+        "needs_video_clips": False,
+        "needs_zh_tts": True,
+        "needs_dialogue_images": False,
+        "needs_pose_images": True,
     },
     "quest": {
         "generate_script": _quest_script,
