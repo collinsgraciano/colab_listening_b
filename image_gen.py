@@ -190,24 +190,35 @@ def generate_dialogue_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
 
 def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
                           char_a_ref_cdn, char_b_ref_cdn, tts_thread):
-    """Generate per-line character pose images for stop-motion mode (2 per line).
+    """Generate per-line character pose atlas (2×2 grid) and split into 4 poses.
 
-    Uses per-character reference images (char_a_ref.png / char_b_ref.png) for
-    identity consistency. The speaker field in each dialogue line determines
-    which reference to use. Images are generated at 1280×720 on white background
-    for rembg background removal.
+    For each dialogue line, generates ONE image containing 4 poses arranged in
+    a 2×2 grid (top-left: speaking, top-right: listening, bottom-left:
+    thinking, bottom-right: reacting). The image is then split into 4 separate
+    pose_{i}_{j}.png files. This guarantees character consistency across poses
+    and reduces API calls by 4×.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
+    from PIL import Image as PILImage
     n = len(dialogue)
-    print(f"  [Pose] Generating {n}×2 pose images for stop-motion (5 concurrent)...")
+    print(f"  [PoseAtlas] Generating {n} pose atlases (2×2 grid → 4 poses each)...")
 
-    # Build all (line_idx, pose_idx, prompt, ref_cdn) tuples
-    tasks = []
-    for i, line in enumerate(dialogue):
+    def _gen_one(line_idx, line):
+        # Check if split poses already exist
+        all_exist = all(
+            os.path.exists(str(img_dir / f"pose_{line_idx}_{j}.png"))
+            for j in range(4)
+        )
+        if all_exist:
+            print(f"    [PoseAtlas] line {line_idx} poses already exist, skipping")
+            return (line_idx, True)
+
+        atlas_path = str(img_dir / f"pose_atlas_{line_idx}.png")
         poses = line.get("poses", [])
         if not poses:
             img_prompt = line.get("image_prompt", f"{char_a_desc} at {scene}")
             poses = [img_prompt, img_prompt]
+
         # Pick the correct character reference based on speaker
         speaker = line.get("speaker", "char_a")
         if speaker == "char_b":
@@ -216,33 +227,38 @@ def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
         else:
             ref_cdn = char_a_ref_cdn
             char_desc = char_a_desc
-        for j, pose_prompt in enumerate(poses[:2]):
-            tasks.append((i, j, pose_prompt, ref_cdn, char_desc))
 
-    def _gen_one(line_idx, pose_idx, pose_prompt, ref_cdn, char_desc):
-        out_path = str(img_dir / f"pose_{line_idx}_{pose_idx}.png")
-        if os.path.exists(out_path):
-            print(f"    [Pose] pose_{line_idx}_{pose_idx} already exists, skipping")
-            return (line_idx, pose_idx, True)
-        # Force half-body close-up framing, no props, white bg, tight outline
-        # for clean rembg separation. Remove any scene/object references.
-        framing = ("half-body close-up shot, waist up, no full body, "
-                   "no props, no objects, no scene, no background elements")
-        outline_style = "cel-shaded with thin clean black outline tightly hugging the character silhouette"
-        if "white background" not in pose_prompt.lower():
-            pose_prompt = pose_prompt.rstrip(".") + f", {framing}, plain white background, 3D cartoon style, {outline_style}"
-        else:
-            pose_prompt = pose_prompt.rstrip(".") + f", {framing}, 3D cartoon style, {outline_style}"
-        # Add character description if not already present (consistency anchor)
-        if char_desc and char_desc.lower() not in pose_prompt.lower():
-            pose_prompt = f"{char_desc}, {pose_prompt}"
-        print(f"    [Pose] Generating pose_{line_idx}_{pose_idx}...")
+        # Build 2×2 atlas prompt: 4 poses in one image
+        pose_a = poses[0] if len(poses) > 0 else "speaking with mouth open"
+        pose_b = poses[1] if len(poses) > 1 else "listening with slight smile"
+        # Pad to 4 poses with variations
+        pose_c = "thinking with hand on chin"
+        pose_d = "surprised with raised eyebrows"
+
+        # Ensure character description is in each pose
+        def _with_desc(p):
+            if char_desc and char_desc.lower() not in p.lower():
+                return f"{char_desc}, {p}"
+            return p
+
+        atlas_prompt = (
+            f"2×2 grid character pose sheet, four poses of the same character, "
+            f"top-left: {_with_desc(pose_a)}, "
+            f"top-right: {_with_desc(pose_b)}, "
+            f"bottom-left: {_with_desc(pose_c)}, "
+            f"bottom-right: {_with_desc(pose_d)}, "
+            f"half-body close-up, waist up, all four poses same character same outfit, "
+            f"plain white background, 3D cartoon style, "
+            f"cel-shaded with thin clean black outline tightly hugging the character silhouette, "
+            f"no props, no objects, no scene, no text"
+        )
+
+        print(f"    [PoseAtlas] Generating atlas for line {line_idx}...")
         try:
             gen_params = {
-                "prompt": pose_prompt,
-                "provider": "frontier",
-                "quality": "high",
-                "image_size": {"width": 1280, "height": 720},
+                "prompt": atlas_prompt,
+                "provider": "seedream",
+                "image_size": {"width": 1280, "height": 1280},
                 "output_format": "png",
             }
             if ref_cdn:
@@ -251,27 +267,49 @@ def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
             task_id = parse_task_id(result)
             data = poll_task(task_id, interval=10, max_wait=600)
             url = data.get("url", "")
-            if url:
-                download_file(url, out_path)
-                print(f"      [Pose] Downloaded: pose_{line_idx}_{pose_idx}.png")
-                return (line_idx, pose_idx, True)
-            print(f"      [Pose] WARNING: No URL for pose_{line_idx}_{pose_idx}")
-            return (line_idx, pose_idx, False)
+            if not url:
+                print(f"      [PoseAtlas] WARNING: No URL for line {line_idx}")
+                return (line_idx, False)
+
+            download_file(url, atlas_path)
+            print(f"      [PoseAtlas] Downloaded atlas: pose_atlas_{line_idx}.png")
+
+            # Split into 4 quadrants
+            atlas = PILImage.open(atlas_path).convert("RGBA")
+            w, h = atlas.size
+            half_w, half_h = w // 2, h // 2
+            quads = [
+                (0, 0, half_w, half_h),          # top-left
+                (half_w, 0, w, half_h),           # top-right
+                (0, half_h, half_w, h),           # bottom-left
+                (half_w, half_h, w, h),           # bottom-right
+            ]
+            for j, (left, top, right, bottom) in enumerate(quads):
+                cell = atlas.crop((left, top, right, bottom))
+                out_path = str(img_dir / f"pose_{line_idx}_{j}.png")
+                cell.save(out_path)
+                print(f"      [PoseAtlas] Split: pose_{line_idx}_{j}.png ({cell.size})")
+
+            # Clean up atlas
+            if os.path.exists(atlas_path):
+                os.remove(atlas_path)
+
+            return (line_idx, True)
         except RuntimeError as e:
             if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
                 print("\n  [FATAL] 所有 MCP Token 积分已耗尽！")
                 if tts_thread:
                     tts_thread.join(timeout=5)
                 sys.exit(1)
-            print(f"      [Pose] ERROR pose_{line_idx}_{pose_idx}: {e}")
-            return (line_idx, pose_idx, False)
+            print(f"      [PoseAtlas] ERROR line {line_idx}: {e}")
+            return (line_idx, False)
         except Exception as e:
-            print(f"      [Pose] ERROR pose_{line_idx}_{pose_idx}: {e}")
-            return (line_idx, pose_idx, False)
+            print(f"      [PoseAtlas] ERROR line {line_idx}: {e}")
+            return (line_idx, False)
 
     with ThreadPoolExecutor(max_workers=5) as pool:
-        futs = [pool.submit(_gen_one, li, pi, pp, rc, cd) for li, pi, pp, rc, cd in tasks]
+        futs = [pool.submit(_gen_one, i, line) for i, line in enumerate(dialogue)]
         for fut in as_completed(futs):
             fut.result()
 
-    print(f"  [Pose] Done — {len(tasks)} pose images processed.")
+    print(f"  [PoseAtlas] Done — {n} atlases → {n*4} pose images.")

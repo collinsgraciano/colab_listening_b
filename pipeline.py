@@ -643,7 +643,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
         pose_images = []
         for i in range(n):
             line_poses = []
-            for j in range(2):
+            for j in range(4):
                 p = str(dirs["images"] / f"pose_{i}_{j}.png")
                 if os.path.exists(p):
                     line_poses.append(p)
