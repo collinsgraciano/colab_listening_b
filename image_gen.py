@@ -98,7 +98,7 @@ def generate_images(image_prompts, img_dir, tts_thread):
                 "prompt": prompt,
                 "provider": "frontier",
                 "quality": "high",
-                "image_size": "landscape_16_9",
+                "image_size": {"width": 1280, "height": 720},
                 "output_format": "png",
             })
             task_id = parse_task_id(result)
@@ -155,7 +155,7 @@ def generate_dialogue_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
                 "prompt": img_prompt,
                 "provider": "frontier",
                 "quality": "high",
-                "image_size": "landscape_16_9",
+                "image_size": {"width": 1280, "height": 720},
                 "output_format": "png",
             }
             if ref_cdn:
@@ -189,47 +189,58 @@ def generate_dialogue_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
 
 
 def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
-                          char_scene_cdn, tts_thread):
+                          char_a_ref_cdn, char_b_ref_cdn, tts_thread):
     """Generate per-line character pose images for stop-motion mode (2 per line).
 
-    Each dialogue line's "poses" array contains 2 pose prompt fragments.
-    Images are generated on plain white background for chroma-key removal.
-    Saves as pose_{line_idx}_{pose_idx}.png.
+    Uses per-character reference images (char_a_ref.png / char_b_ref.png) for
+    identity consistency. The speaker field in each dialogue line determines
+    which reference to use. Images are generated at 1280×720 on white background
+    for rembg background removal.
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     n = len(dialogue)
     print(f"  [Pose] Generating {n}×2 pose images for stop-motion (5 concurrent)...")
 
-    # Build all (line_idx, pose_idx, prompt) triples
+    # Build all (line_idx, pose_idx, prompt, ref_cdn) tuples
     tasks = []
     for i, line in enumerate(dialogue):
         poses = line.get("poses", [])
         if not poses:
-            # Fallback: derive from image_prompt
             img_prompt = line.get("image_prompt", f"{char_a_desc} at {scene}")
             poses = [img_prompt, img_prompt]
-        for j, pose_prompt in enumerate(poses[:2]):  # max 2 poses
-            tasks.append((i, j, pose_prompt))
+        # Pick the correct character reference based on speaker
+        speaker = line.get("speaker", "char_a")
+        if speaker == "char_b":
+            ref_cdn = char_b_ref_cdn
+            char_desc = char_b_desc
+        else:
+            ref_cdn = char_a_ref_cdn
+            char_desc = char_a_desc
+        for j, pose_prompt in enumerate(poses[:2]):
+            tasks.append((i, j, pose_prompt, ref_cdn, char_desc))
 
-    def _gen_one(line_idx, pose_idx, pose_prompt):
+    def _gen_one(line_idx, pose_idx, pose_prompt, ref_cdn, char_desc):
         out_path = str(img_dir / f"pose_{line_idx}_{pose_idx}.png")
         if os.path.exists(out_path):
             print(f"    [Pose] pose_{line_idx}_{pose_idx} already exists, skipping")
             return (line_idx, pose_idx, True)
-        # Ensure white background for chroma-key removal
+        # Ensure white background for rembg removal; include char_desc for consistency
         if "white background" not in pose_prompt.lower():
-            pose_prompt = pose_prompt.rstrip(".") + ", plain white background, no background scene, 3D cartoon style, 16:9"
+            pose_prompt = pose_prompt.rstrip(".") + ", plain white background, no background scene, 3D cartoon style"
+        # Add character description if not already present (consistency anchor)
+        if char_desc and char_desc.lower() not in pose_prompt.lower():
+            pose_prompt = f"{char_desc}, {pose_prompt}"
         print(f"    [Pose] Generating pose_{line_idx}_{pose_idx}...")
         try:
             gen_params = {
                 "prompt": pose_prompt,
                 "provider": "frontier",
                 "quality": "high",
-                "image_size": "landscape_16_9",
+                "image_size": {"width": 1280, "height": 720},
                 "output_format": "png",
             }
-            if char_scene_cdn:
-                gen_params["image_urls"] = char_scene_cdn
+            if ref_cdn:
+                gen_params["image_urls"] = ref_cdn
             result = call_tool("generate_image", gen_params)
             task_id = parse_task_id(result)
             data = poll_task(task_id, interval=10, max_wait=600)
@@ -253,7 +264,7 @@ def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
             return (line_idx, pose_idx, False)
 
     with ThreadPoolExecutor(max_workers=5) as pool:
-        futs = [pool.submit(_gen_one, li, pi, pp) for li, pi, pp in tasks]
+        futs = [pool.submit(_gen_one, li, pi, pp, rc, cd) for li, pi, pp, rc, cd in tasks]
         for fut in as_completed(futs):
             fut.result()
 

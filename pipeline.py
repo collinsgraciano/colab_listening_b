@@ -290,6 +290,12 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         (f"Character design sheet, {char_a_desc} on the left, {char_b_desc} on the right, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_scene.png"),
         (f"Scene background, {scene}, wide shot, showing all key elements of the scene, 3D cartoon style, no characters, no text, 16:9", "scene.png"),
     ]
+    if is_stop_motion:
+        # Per-character reference sheets for pose consistency
+        image_prompts.append(
+            (f"Character reference sheet, {char_a_desc}, single character, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_a_ref.png"))
+        image_prompts.append(
+            (f"Character reference sheet, {char_b_desc}, single character, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_b_ref.png"))
     if is_quest:
         char_c_desc = script.get("char_c_description", "friendly staff member")
         image_prompts.append(
@@ -325,10 +331,11 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
                 dialogue, img_dir, char_a_desc, char_b_desc, scene,
                 is_quest, char_scene_cdn, char_scene_c_cdn, tts_thread)
         elif is_stop_motion:
-            char_scene_cdn = image_urls.get("char_scene.png", "")
+            char_a_ref_cdn = image_urls.get("char_a_ref.png", "")
+            char_b_ref_cdn = image_urls.get("char_b_ref.png", "")
             _generate_pose_images(
                 dialogue, img_dir, char_a_desc, char_b_desc, scene,
-                char_scene_cdn, tts_thread)
+                char_a_ref_cdn, char_b_ref_cdn, tts_thread)
 
         print("  [Image] All images done. Waiting for TTS...")
 
