@@ -55,10 +55,10 @@ LANDING_ROTATION = 1.4  # degrees
 # Pose canvas for normalization (transparent, larger than target to avoid clipping)
 POSE_CANVAS_W = TARGET_W
 POSE_CANVAS_H = TARGET_H
-POSE_TARGET_H = TARGET_H - 80   # leave room for subtitle area at bottom
-POSE_BOTTOM = TARGET_H - 40      # bottom anchor (used for full-body, kept for compat)
-# For half-body close-ups, center vertically instead of bottom-anchoring
-POSE_CENTER_Y = TARGET_H // 2    # vertical center for half-body poses
+POSE_TARGET_H = TARGET_H - 100  # leave room for subtitle area at bottom
+# For half-body close-ups, center vertically; keep character fully in-frame
+POSE_CENTER_Y = TARGET_H // 2 + 60  # slightly below center to leave room for subtitles
+POSE_BOTTOM = POSE_CENTER_Y  # kept for backward compat
 
 # Shadow
 SHADOW_RGB = (145, 141, 133)
@@ -236,10 +236,18 @@ def transform_pose(source: Image.Image, scale: float = 1.0,
 
 
 def paste_with_shadow(canvas: Image.Image, image: Image.Image,
-                      x: float, bottom: float) -> None:
-    """Paste a character image onto canvas with soft shadow, bottom-anchored."""
+                      x: float, y: float, *, centered: bool = True) -> None:
+    """Paste a character image onto canvas with soft shadow.
+
+    When centered=True (half-body close-ups), y is the vertical CENTER
+    of the image. When centered=False (full-body), y is the BOTTOM edge
+    (legacy bottom-anchored mode).
+    """
     left = round(x - image.width / 2)
-    top = round(bottom - image.height)
+    if centered:
+        top = round(y - image.height / 2)
+    else:
+        top = round(y - image.height)
     # Shadow
     alpha = image.getchannel("A").filter(ImageFilter.GaussianBlur(SHADOW_BLUR))
     shadow = Image.new("RGBA", image.size, (*SHADOW_RGB, 255))
@@ -249,17 +257,19 @@ def paste_with_shadow(canvas: Image.Image, image: Image.Image,
 
 
 def render_frame(background: Image.Image, character: Image.Image | None,
-                 x: float, bottom: float, scale: float = 1.0,
-                 rotation: float = 0.0) -> Image.Image:
+                 x: float, y: float, scale: float = 1.0,
+                 rotation: float = 0.0, *, centered: bool = True) -> Image.Image:
     """Render a single frame: background + character (with shadow).
 
     Args:
         background: Pre-loaded RGBA background image (already at TARGET_W×TARGET_H).
         character: RGBA character pose (already normalized to canvas). None = no character.
         x: Character center X position.
-        bottom: Character bottom Y position.
+        y: Character center Y position (when centered=True) or bottom (when False).
         scale: Character scale factor.
         rotation: Character rotation in degrees.
+        centered: If True, y is the vertical center (half-body mode).
+                  If False, y is the bottom edge (full-body mode).
 
     Returns:
         RGB Image at TARGET_W×TARGET_H.
@@ -267,7 +277,7 @@ def render_frame(background: Image.Image, character: Image.Image | None,
     canvas = background.copy()
     if character is not None:
         pose = transform_pose(character, scale=scale, rotation=rotation)
-        paste_with_shadow(canvas, pose, x, bottom)
+        paste_with_shadow(canvas, pose, x, y, centered=centered)
     return canvas.convert("RGB")
 
 
@@ -758,7 +768,7 @@ def _render_dialogue_segment(
         rotation = landing["rotation"]
 
         # Render frame
-        frame = render_frame(background, current_pose, x, bottom, scale, rotation)
+        frame = render_frame(background, current_pose, x, bottom, scale, rotation, centered=True)
 
         # Overlay subtitle
         if subtitle_overlay is not None:
