@@ -194,12 +194,12 @@ def concat_segments(segment_paths: list[str], output_path: str,
     All segments must have uniform format (libx264/yuv420p/24fps/aac/44100Hz/stereo).
     Returns the output path on success, raises RuntimeError on failure.
     """
-    tmp_dir = Path(tmp_dir) if tmp_dir else Path(output_path).parent / "tmp"
+    tmp_dir = Path(tmp_dir).resolve() if tmp_dir else Path(output_path).resolve().parent / "tmp"
     tmp_dir.mkdir(parents=True, exist_ok=True)
     concat_list = tmp_dir / "concat.txt"
     with open(concat_list, "w", encoding="utf-8") as f:
         for s in segment_paths:
-            f.write(f"file '{s}'\n")
+            f.write(f"file '{Path(s).resolve()}'\n")
 
     result = subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
