@@ -637,6 +637,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
         final_path = compose_quest(
             work_dir=str(work_dir),
             pose_images=pose_images,
+            char_pose_map=char_pose_map,
             host_poses=host_poses,
             timeline=timeline,
             script=script,

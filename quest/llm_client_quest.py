@@ -128,6 +128,11 @@ TECHNICAL REQUIREMENTS:
   - "speaker": "char_a" | "char_b" | "char_c"
   - "text": the English sentence (max 10 words)
   - "phase": "buildup" | "core" | "reveal" | "review"
+  - "on_screen": an array specifying WHICH characters are visible in the frame for this line. Use this to create visual variety:
+    - ["char_a", "char_b"] — both friends on screen (speaker on left, listener on right). Use this for MOST buildup/reveal/review lines where both friends are present.
+    - ["char_a"] or ["char_b"] — only one character visible (close-up). Use occasionally for emotional or important lines.
+    - ["char_a", "char_c"] — customer + staff on screen. Use for core transaction lines where both interact.
+    - [] (empty array) — NO character on screen, scene/object shot only. Use 2-4 times total for establishing shots of the environment, menu, product, or location (e.g. a wide shot of the shop interior, a close-up of a menu board, a drink being prepared). These lines have a speaker (narration continues) but the visual is the scene without characters.
   - "phonetic": IPA phonetic transcription in /slashes/ (use proper IPA symbols)
   - "zh": Traditional Chinese (繁體中文) translation
   - "image_prompt": a detailed prompt for ONE scene image: (1) the speaker's EXACT physical description (identical every time for the same character), (2) their role, (3) the scene location, (4) the action matching the dialogue text, (5) if two characters appear, describe both consistently. 3D cartoon style, 16:9.
@@ -213,7 +218,7 @@ JSON schema:
   "thumbnail_action": string,
   "thumbnail_subtitle": string,
   "thumbnail_icons": [{{"en": string, "zh": string}}],
-  "dialogue": [{{"speaker": string, "phase": string, "text": string, "phonetic": string, "zh": string, "image_prompt": string}}]
+  "dialogue": [{{"speaker": string, "phase": string, "on_screen": [string], "text": string, "phonetic": string, "zh": string, "image_prompt": string}}]
 }}
 
 Topic: {topic}"""
@@ -310,6 +315,9 @@ def generate_quest_script(topic: str, cefr: str = "A1",
         line.setdefault("phonetic", "")
         line.setdefault("zh", "")
         line.setdefault("image_prompt", "")
+        # Default on_screen to just the speaker if not specified
+        if not line.get("on_screen"):
+            line["on_screen"] = [line.get("speaker", "char_a")]
         if not line.get("phase"):
             if i < n_buildup:
                 line["phase"] = "buildup"

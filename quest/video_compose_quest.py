@@ -212,7 +212,7 @@ def _build_pose_schedule(n_poses: int, total_frames: int, fps: float,
 
 
 def _render_sm_segment(
-    pose_paths: list[str],
+    char_layers: list[dict],
     bg_img_path: str,
     audio_file: str | None,
     out_path: str,
@@ -224,11 +224,17 @@ def _render_sm_segment(
     direction: int = 1,
     fade_af: str = "",
 ) -> bool:
-    """Render a stop-motion video segment with randomized pose selection.
+    """Render a stop-motion video segment with multi-character support.
 
-    Processes poses (rembg + normalize + cache), renders frames with a random
-    pose schedule, then encodes to mp4 with audio. Optionally composites an
-    overlay PNG on top.
+    Each entry in char_layers is a dict:
+        {"poses": list[str], "is_speaker": bool}
+    - Speaker: randomized pose schedule (0.5-2.0s holds), landing transform
+    - Listener: static listening pose (index 1), no landing transform
+    - 0 layers: background only (scene/object shot)
+
+    Position logic:
+        1 character → center
+        2 characters → speaker left (x=0.35W), listener right (x=0.65W)
 
     Returns True on success, False on failure.
     """
@@ -240,103 +246,129 @@ def _render_sm_segment(
 
     frames_dir.mkdir(parents=True, exist_ok=True)
 
-    # Process poses: rembg + normalize (cache per pose image)
-    processed = []
-    for p_path in pose_paths:
-        if not os.path.exists(p_path):
-            continue
-        cache_path = cache_dir / f"cutout_{Path(p_path).stem}.png"
-        if cache_path.exists():
-            processed.append(PILImage.open(cache_path).convert("RGBA"))
-        else:
-            try:
-                raw = PILImage.open(p_path)
-                alpha = remove_bg(raw)
-                norm = normalize_pose(alpha)
-                norm.save(str(cache_path))
-                processed.append(norm)
-            except Exception as e:
-                print(f"  [Quest] rembg error for {p_path}: {e}")
-    if not processed:
-        processed = [PILImage.new("RGBA", (1280, 720), (0, 0, 0, 0))]
+    # Process poses for each character layer (rembg + normalize + cache)
+    processed_layers: list[dict] = []
+    for layer in char_layers:
+        pose_paths = layer.get("poses", [])
+        is_speaker = layer.get("is_speaker", False)
+        processed = []
+        for p_path in pose_paths:
+            if not os.path.exists(p_path):
+                continue
+            cache_path = cache_dir / f"cutout_{Path(p_path).stem}.png"
+            if cache_path.exists():
+                processed.append(PILImage.open(cache_path).convert("RGBA"))
+            else:
+                try:
+                    raw = PILImage.open(p_path)
+                    alpha = remove_bg(raw)
+                    norm = normalize_pose(alpha)
+                    norm.save(str(cache_path))
+                    processed.append(norm)
+                except Exception as e:
+                    print(f"  [Quest] rembg error for {p_path}: {e}")
+        if not processed:
+            processed = [PILImage.new("RGBA", (1280, 720), (0, 0, 0, 0))]
+        processed_layers.append({
+            "poses": processed,
+            "is_speaker": is_speaker,
+        })
 
     # Load background
     bg_img = PILImage.open(bg_img_path).convert("RGBA").resize((1280, 720))
 
-    # Build random pose schedule
-    n_poses = len(processed)
-    total_frames = max(1, round(duration * DELIVERY_FPS))
-    schedule = _build_pose_schedule(n_poses, total_frames, DELIVERY_FPS, seed)
+    # Determine positions based on number of characters
+    n_chars = len(processed_layers)
+    if n_chars == 0:
+        positions = []
+    elif n_chars == 1:
+        positions = [1280 * 0.5]
+    else:
+        # 2+ characters: speaker left, listener(s) right
+        positions = []
+        for i, layer in enumerate(processed_layers):
+            if layer["is_speaker"]:
+                positions.append(1280 * 0.35)
+            else:
+                positions.append(1280 * 0.65)
 
-    cx = 1280 / 2
+    # Build random pose schedule for the speaker
+    total_frames = max(1, round(duration * DELIVERY_FPS))
+    speaker_schedule = None
+    for i, layer in enumerate(processed_layers):
+        if layer["is_speaker"]:
+            speaker_schedule = _build_pose_schedule(
+                len(layer["poses"]), total_frames, DELIVERY_FPS, seed)
+            break
+
     cy = POSE_CENTER_Y
 
     for fidx in range(total_frames):
-        t = fidx / DELIVERY_FPS
-        # Find which pose to use at this frame
-        pose_idx = 0
-        local_t = t
-        for pi, start_frame in reversed(schedule):
-            if fidx >= start_frame:
-                pose_idx = pi
-                local_t = (fidx - start_frame) / DELIVERY_FPS
-                break
+        # Start with background
+        canvas = bg_img.copy()
 
-        pose = processed[pose_idx]
-        landing = compute_landing(local_t, direction=direction)
-        scale = 1.0 + landing["scale"]
-        frame = render_frame(bg_img, pose, cx + landing["x"],
-                             cy + landing["y"], scale, landing["rotation"],
-                             centered=True)
+        for li, layer in enumerate(processed_layers):
+            poses = layer["poses"]
+            x = positions[li] if li < len(positions) else 1280 * 0.5
+
+            if layer["is_speaker"] and speaker_schedule:
+                # Use random pose schedule
+                pose_idx = 0
+                local_t = fidx / DELIVERY_FPS
+                for pi, start_frame in reversed(speaker_schedule):
+                    if fidx >= start_frame:
+                        pose_idx = pi
+                        local_t = (fidx - start_frame) / DELIVERY_FPS
+                        break
+                pose = poses[pose_idx]
+                landing = compute_landing(local_t, direction=direction)
+                scale = 1.0 + landing["scale"]
+                px = x + landing["x"]
+                py = cy + landing["y"]
+                rot = landing["rotation"]
+            else:
+                # Listener: static listening pose (index 1), no landing
+                pose = poses[1] if len(poses) > 1 else poses[0]
+                scale = 1.0
+                px = x
+                py = cy
+                rot = 0.0
+
+            from stop_motion import transform_pose, paste_with_shadow
+            sprite = transform_pose(pose, scale=scale, rotation=rot)
+            paste_with_shadow(canvas, sprite, px, py, centered=True)
+
+        frame = canvas.convert("RGB")
+
+        # Overlay PNG (subtitle cards, etc.)
+        if overlay_path and os.path.exists(overlay_path):
+            ov = PILImage.open(overlay_path).convert("RGBA")
+            frame_rgba = frame.convert("RGBA")
+            frame_rgba.alpha_composite(ov, (0, 0))
+            frame = frame_rgba.convert("RGB")
+
         frame.save(str(frames_dir / f"frame-{fidx:04d}.png"), compress_level=2)
 
     # Encode frames to mp4
     frame_pattern = str(frames_dir / "frame-%04d.png")
 
-    if overlay_path and os.path.exists(overlay_path):
-        # Frames + audio + overlay PNG
-        if audio_file and os.path.exists(audio_file):
-            cmd = ["ffmpeg", "-y",
-                   "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
-                   "-i", audio_file, "-i", overlay_path,
-                   "-t", f"{duration:.3f}",
-                   "-filter_complex",
-                   f"[0:v][2:v]overlay=0:0[v];"
-                   f"[1:a]{fade_af},apad=whole_dur={duration:.3f}[a]",
-                   "-map", "[v]", "-map", "[a]",
-                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
-                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                   out_path]
-        else:
-            cmd = ["ffmpeg", "-y",
-                   "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
-                   "-i", overlay_path,
-                   "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                   "-t", f"{duration:.3f}",
-                   "-filter_complex", "[0:v][1:v]overlay=0:0[v]",
-                   "-map", "[v]", "-map", "2:a",
-                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
-                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                   out_path]
+    if audio_file and os.path.exists(audio_file):
+        cmd = ["ffmpeg", "-y",
+               "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
+               "-i", audio_file,
+               "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
+               "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+               "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
+               out_path]
     else:
-        # Frames + audio only (no overlay)
-        if audio_file and os.path.exists(audio_file):
-            cmd = ["ffmpeg", "-y",
-                   "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
-                   "-i", audio_file,
-                   "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
-                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                   "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
-                   out_path]
-        else:
-            cmd = ["ffmpeg", "-y",
-                   "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
-                   "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                   "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
-                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                   out_path]
+        cmd = ["ffmpeg", "-y",
+               "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
+               "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+               "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
+               "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+               out_path]
 
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
@@ -363,21 +395,27 @@ def compose_quest(
     srt_dir: str,
     pad: float = 5.0,
     host_poses: list[str] | None = None,
+    char_pose_map: dict[str, list[str]] | None = None,
     progress_cb=None,
 ) -> str:
     """Compose the final quest (task-hook slow listening) video — stop-motion.
 
     Args:
         work_dir: Working directory for temp files and output.
-        pose_images: Per-line list of pose image paths (pose_{speaker}_{j}.png).
+        pose_images: Per-line list of pose image paths (fallback, used when
+                    char_pose_map is None).
         timeline: From build_quest_timeline (audio_dur enriched).
-        script: Quest script dict.
+        script: Quest script dict (dialogue lines carry "on_screen").
         narration: {"welcome": path, "hook": path, "outro": path}.
         normal_paths: English dialogue audio paths (slow speed).
         scene_img: Scene background image path.
         srt_dir: Directory used as FFmpeg cwd for the subtitle burn.
         pad: Silence pad after dialogue lines (seconds).
         host_poses: Pose image paths for the host/narrator character.
+        char_pose_map: Per-character pose paths dict, e.g.
+            {"char_a": ["path/0.png", ...], "char_b": [...], "char_c": [...]}.
+            When provided, used with dialogue["on_screen"] to build multi-char
+            layers. Falls back to pose_images when None.
         progress_cb: callback(percent, message).
 
     Returns:
@@ -447,10 +485,11 @@ def compose_quest(
         elif seg_type == "welcome":
             # Host stop-motion + welcome audio
             h_poses = host_poses or [scene_img]
+            char_layers = [{"poses": h_poses, "is_speaker": True}]
             frames_dir = work / "sm_frames" / f"welcome_{seg_idx}"
             cache_dir = work / "sm_frames"
             success = _render_sm_segment(
-                h_poses, scene_img, audio_file, out_path, duration,
+                char_layers, scene_img, audio_file, out_path, duration,
                 frames_dir, cache_dir,
                 overlay_path=None,
                 seed=hash("welcome") % 1000,
@@ -471,10 +510,11 @@ def compose_quest(
             _render_hook_frame(hook_en, question_en, question_zh, scene_img,
                                hook_overlay)
             h_poses = host_poses or [scene_img]
+            char_layers = [{"poses": h_poses, "is_speaker": True}]
             frames_dir = work / "sm_frames" / f"hook_{seg_idx}"
             cache_dir = work / "sm_frames"
             success = _render_sm_segment(
-                h_poses, scene_img, audio_file, out_path, duration,
+                char_layers, scene_img, audio_file, out_path, duration,
                 frames_dir, cache_dir,
                 overlay_path=hook_overlay,
                 seed=hash("hook") % 1000,
@@ -496,10 +536,11 @@ def compose_quest(
             outro_overlay = str(static_dir / "outro_overlay.png")
             _render_outro_frame(question_en, question_zh, scene_img, outro_overlay)
             h_poses = host_poses or [scene_img]
+            char_layers = [{"poses": h_poses, "is_speaker": True}]
             frames_dir = work / "sm_frames" / f"outro_{seg_idx}"
             cache_dir = work / "sm_frames"
             success = _render_sm_segment(
-                h_poses, scene_img, audio_file, out_path, duration,
+                char_layers, scene_img, audio_file, out_path, duration,
                 frames_dir, cache_dir,
                 overlay_path=outro_overlay,
                 seed=hash("outro") % 1000,
@@ -517,16 +558,35 @@ def compose_quest(
                        out_path]
 
         elif seg_type == "dialogue":
-            # Stop-motion: render frames from character poses with random schedule
-            idx = min(audio_idx, len(pose_images) - 1) if pose_images else 0
-            line_poses = pose_images[idx] if pose_images and idx < len(pose_images) else []
-            if not line_poses:
-                line_poses = [scene_img]
+            # Stop-motion: build char_layers from on_screen field
+            dialogue = script.get("dialogue", [])
+            line_data = dialogue[audio_idx] if audio_idx < len(dialogue) else {}
+            speaker = line_data.get("speaker", "char_a")
+            on_screen = line_data.get("on_screen", [speaker])
+
+            if char_pose_map:
+                # Build multi-character layers from on_screen
+                char_layers = []
+                for char_key in on_screen:
+                    poses = char_pose_map.get(char_key, [])
+                    if not poses:
+                        poses = char_pose_map.get("char_a", [scene_img])
+                    char_layers.append({
+                        "poses": poses,
+                        "is_speaker": (char_key == speaker),
+                    })
+                # If on_screen is empty (scene-only shot), char_layers is []
+            else:
+                # Fallback: single speaker (legacy mode)
+                idx = min(audio_idx, len(pose_images) - 1) if pose_images else 0
+                line_poses = pose_images[idx] if pose_images and idx < len(pose_images) else [scene_img]
+                char_layers = [{"poses": line_poses, "is_speaker": True}]
+
             frames_dir = work / "sm_frames" / f"dialogue_{audio_idx}"
             cache_dir = work / "sm_frames"
             direction = 1 if audio_idx % 2 == 0 else -1
             success = _render_sm_segment(
-                line_poses, scene_img, audio_file, out_path, duration,
+                char_layers, scene_img, audio_file, out_path, duration,
                 frames_dir, cache_dir,
                 overlay_path=None,
                 seed=audio_idx * 7 + 13,
