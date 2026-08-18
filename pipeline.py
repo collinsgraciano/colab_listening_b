@@ -101,23 +101,31 @@ def _validate_script(script: dict, num_lines: int, enhanced: bool = False,
             return False, "Quest script has empty 'listening_question_en'"
         if not script.get("hook_intro_en", "").strip():
             return False, "Quest script has empty 'hook_intro_en'"
+        if not script.get("welcome_en", "").strip():
+            return False, "Quest script has empty 'welcome_en'"
         if not script.get("char_c_description", "").strip():
             return False, "Quest script has empty 'char_c_description'"
+        if not script.get("host_description", "").strip():
+            return False, "Quest script has empty 'host_description'"
         phases = [line.get("phase", "") for line in dialogue]
-        for ph in ("buildup", "core", "review"):
+        for ph in ("buildup", "core", "reveal", "review"):
             if ph not in phases:
                 return False, f"Quest dialogue missing phase '{ph}'"
-        order = {"buildup": 0, "core": 1, "review": 2}
+        order = {"buildup": 0, "core": 1, "reveal": 2, "review": 3}
         seq = [order.get(p, -1) for p in phases]
         if any(b < a for a, b in zip(seq, seq[1:])):
-            return False, "Quest dialogue phases are out of order (must be buildup -> core -> review)"
+            return False, "Quest dialogue phases are out of order (must be buildup -> core -> reveal -> review)"
         for i, line in enumerate(dialogue):
             speaker = line.get("speaker", "")
             phase = line.get("phase", "")
-            if phase in ("buildup", "review") and speaker not in ("char_a", "char_b"):
+            if phase in ("buildup", "reveal", "review") and speaker not in ("char_a", "char_b"):
                 return False, f"Dialogue line {i} ({phase}) speaker must be char_a/char_b, got '{speaker}'"
-            if phase == "core" and speaker not in ("char_a", "char_c"):
-                return False, f"Dialogue line {i} (core) speaker must be char_a/char_c, got '{speaker}'"
+            if phase == "core" and speaker not in ("char_a", "char_b", "char_c"):
+                return False, f"Dialogue line {i} (core) speaker must be char_a/char_b/char_c, got '{speaker}'"
+        # Ensure char_c appears at least once in core
+        core_speakers = [line.get("speaker", "") for line in dialogue if line.get("phase") == "core"]
+        if "char_c" not in core_speakers:
+            return False, "Quest core phase must include at least one char_c (staff) line"
     return True, ""
 
 
@@ -613,7 +621,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
         # Build per-line pose_images from 3 character atlases
         # pose_images[i] = [pose_{speaker}_{j}.png for j in 0..3]
         char_pose_map = {}  # cache per-character pose paths
-        for ck in ("char_a", "char_b", "char_c"):
+        for ck in ("char_a", "char_b", "char_c", "host"):
             poses = [str(dirs["images"] / f"pose_{ck}_{j}.png") for j in range(4)]
             if all(os.path.exists(p) for p in poses):
                 char_pose_map[ck] = poses
@@ -625,9 +633,11 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             if not poses:
                 poses = char_pose_map.get("char_a", [scene_img])
             pose_images.append(poses)
+        host_poses = char_pose_map.get("host", [scene_img] * 4)
         final_path = compose_quest(
             work_dir=str(work_dir),
             pose_images=pose_images,
+            host_poses=host_poses,
             timeline=timeline,
             script=script,
             narration=narration,

@@ -17,9 +17,12 @@ def generate_tts(script, dialogue, audio_dir, results, enhanced=False, quest=Fal
 
     narration = {}
     if quest:
+        welcome_text = script.get("welcome_en", "")
         hook_text = script.get("hook_intro_en", "")
         outro_text = script.get("outro", "That's all for today. Keep practicing!")
-        for name, text, rate in [("hook", hook_text, "-10%"), ("outro", outro_text, "-10%")]:
+        for name, text, rate in [("welcome", welcome_text, "-10%"),
+                                 ("hook", hook_text, "-10%"),
+                                 ("outro", outro_text, "-10%")]:
             if text:
                 path = str(audio_dir / f"{name}.mp3")
                 dur = tts.synth_english(text, "af_sky", path, rate=rate)

@@ -48,6 +48,8 @@ def enrich_timeline(timeline: list[dict], tts, pad: float,
             ad = _narration_dur("practice_intro", seg["duration"] - pad)
         elif seg_type == "hook_intro":
             ad = _narration_dur("hook", seg["duration"] - pad)
+        elif seg_type == "welcome":
+            ad = _narration_dur("welcome", seg["duration"] - pad)
         elif seg_type == "outro":
             ad = _narration_dur("outro", seg["duration"] - pad)
         else:

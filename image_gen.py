@@ -316,11 +316,11 @@ def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
 
 
 def generate_quest_atlases(script, img_dir, tts_thread):
-    """Generate 3 character pose atlases (2×2 grid each) for quest mode.
+    """Generate 4 character pose atlases (2×2 grid each) for quest mode.
 
-    One atlas per character (char_a, char_b, char_c), each containing 4 poses:
-    speaking, listening, thinking, reacting. Split into pose_{char}_{j}.png.
-    Only 3 API calls total — guarantees consistency across all 48 dialogue lines.
+    One atlas per character (char_a, char_b, char_c, host), each containing 4
+    poses: speaking, listening, thinking, reacting. Split into pose_{char}_{j}.png.
+    Only 4 API calls total — guarantees consistency across all dialogue lines.
     """
     from PIL import Image as PILImage
 
@@ -328,6 +328,7 @@ def generate_quest_atlases(script, img_dir, tts_thread):
         ("char_a", script.get("char_a_description", "friendly young man")),
         ("char_b", script.get("char_b_description", "friendly young woman")),
         ("char_c", script.get("char_c_description", "friendly staff member")),
+        ("host", script.get("host_description", "friendly young woman with short brown hair, wearing a smart blue blazer, warm smile, professional TV host appearance")),
     ]
     # Also generate per-character half-body reference images
     ref_urls = {}
@@ -437,4 +438,4 @@ def generate_quest_atlases(script, img_dir, tts_thread):
         except Exception as e:
             print(f"    [QuestAtlas] ERROR {char_key}: {e}")
 
-    print(f"  [QuestAtlas] Done — 3 characters × 4 poses = 12 pose images.")
+    print(f"  [QuestAtlas] Done — 4 characters × 4 poses = 16 pose images.")

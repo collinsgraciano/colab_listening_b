@@ -1,18 +1,25 @@
-"""Quest FFmpeg video composition — task-hook slow listening, all-image mode.
+"""Quest FFmpeg video composition — task-hook slow listening, stop-motion mode.
 
 Structure:
   Ch1: Title Card    (scene image + big title overlay, 5s silence)
-  Ch2: Hook / Intro  (scene image + listening-task card + narrator audio)
-  Ch3: Slow Dialogue (one static image per line + slow TTS + burned subtitles)
-  Ch4: Outro & CTA   (scene image + answer card + narrator audio)
+  Ch2: Welcome       (host stop-motion + welcome audio)
+  Ch3: Hook / Intro  (host stop-motion + listening-task card + narrator audio)
+  Ch4: Slow Dialogue (4 phases: buildup->core->reveal->review, per-line
+      stop-motion with randomized pose schedule + slow TTS + burned subtitles)
+  Ch5: Outro & CTA   (host stop-motion + answer card + narrator audio)
 
-Reuses render helpers from parent video_compose.py (same pattern as enhanced/).
-No video clips are generated — this is the static (credit-light) variant.
+The host character (节目主) appears on-screen in Welcome, Hook, and Outro
+segments with stop-motion animation using the host's pose atlas. Dialogue
+segments use each speaker's pose atlas. All segments use randomized pose
+scheduling (variable hold times 0.5-2.0s) for natural-looking motion.
+
+Reuses render helpers from parent video_compose.py.
 """
 import os
 import sys
 import subprocess
 import shutil
+import random
 from pathlib import Path
 
 _PARENT = str(Path(__file__).parent.parent.resolve())
@@ -181,6 +188,170 @@ def _render_outro_frame(question_en, question_zh, scene_img_path,
     frame.save(out_path, "PNG")
 
 
+def _build_pose_schedule(n_poses: int, total_frames: int, fps: float,
+                         seed: int) -> list[tuple[int, int]]:
+    """Build a randomized pose schedule: list of (pose_idx, start_frame).
+
+    Each pose is held for 0.5-2.0s (randomized). The first pose is always 0
+    (speaking). Consecutive poses are always different.
+    """
+    rng = random.Random(seed)
+    if n_poses <= 1:
+        return [(0, 0)]
+    schedule = [(0, 0)]
+    frame = 0
+    while frame < total_frames:
+        hold = rng.uniform(0.5, 2.0)
+        frame += max(1, round(hold * fps))
+        if frame < total_frames:
+            current = schedule[-1][0]
+            candidates = [i for i in range(n_poses) if i != current]
+            next_pose = rng.choice(candidates)
+            schedule.append((next_pose, frame))
+    return schedule
+
+
+def _render_sm_segment(
+    pose_paths: list[str],
+    bg_img_path: str,
+    audio_file: str | None,
+    out_path: str,
+    duration: float,
+    frames_dir: Path,
+    cache_dir: Path,
+    overlay_path: str | None = None,
+    seed: int = 0,
+    direction: int = 1,
+    fade_af: str = "",
+) -> bool:
+    """Render a stop-motion video segment with randomized pose selection.
+
+    Processes poses (rembg + normalize + cache), renders frames with a random
+    pose schedule, then encodes to mp4 with audio. Optionally composites an
+    overlay PNG on top.
+
+    Returns True on success, False on failure.
+    """
+    from stop_motion import (
+        remove_bg, normalize_pose, render_frame,
+        compute_landing, POSE_CENTER_Y, DELIVERY_FPS,
+    )
+    from PIL import Image as PILImage
+
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    # Process poses: rembg + normalize (cache per pose image)
+    processed = []
+    for p_path in pose_paths:
+        if not os.path.exists(p_path):
+            continue
+        cache_path = cache_dir / f"cutout_{Path(p_path).stem}.png"
+        if cache_path.exists():
+            processed.append(PILImage.open(cache_path).convert("RGBA"))
+        else:
+            try:
+                raw = PILImage.open(p_path)
+                alpha = remove_bg(raw)
+                norm = normalize_pose(alpha)
+                norm.save(str(cache_path))
+                processed.append(norm)
+            except Exception as e:
+                print(f"  [Quest] rembg error for {p_path}: {e}")
+    if not processed:
+        processed = [PILImage.new("RGBA", (1280, 720), (0, 0, 0, 0))]
+
+    # Load background
+    bg_img = PILImage.open(bg_img_path).convert("RGBA").resize((1280, 720))
+
+    # Build random pose schedule
+    n_poses = len(processed)
+    total_frames = max(1, round(duration * DELIVERY_FPS))
+    schedule = _build_pose_schedule(n_poses, total_frames, DELIVERY_FPS, seed)
+
+    cx = 1280 / 2
+    cy = POSE_CENTER_Y
+
+    for fidx in range(total_frames):
+        t = fidx / DELIVERY_FPS
+        # Find which pose to use at this frame
+        pose_idx = 0
+        local_t = t
+        for pi, start_frame in reversed(schedule):
+            if fidx >= start_frame:
+                pose_idx = pi
+                local_t = (fidx - start_frame) / DELIVERY_FPS
+                break
+
+        pose = processed[pose_idx]
+        landing = compute_landing(local_t, direction=direction)
+        scale = 1.0 + landing["scale"]
+        frame = render_frame(bg_img, pose, cx + landing["x"],
+                             cy + landing["y"], scale, landing["rotation"],
+                             centered=True)
+        frame.save(str(frames_dir / f"frame-{fidx:04d}.png"), compress_level=2)
+
+    # Encode frames to mp4
+    frame_pattern = str(frames_dir / "frame-%04d.png")
+
+    if overlay_path and os.path.exists(overlay_path):
+        # Frames + audio + overlay PNG
+        if audio_file and os.path.exists(audio_file):
+            cmd = ["ffmpeg", "-y",
+                   "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
+                   "-i", audio_file, "-i", overlay_path,
+                   "-t", f"{duration:.3f}",
+                   "-filter_complex",
+                   f"[0:v][2:v]overlay=0:0[v];"
+                   f"[1:a]{fade_af},apad=whole_dur={duration:.3f}[a]",
+                   "-map", "[v]", "-map", "[a]",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
+                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                   out_path]
+        else:
+            cmd = ["ffmpeg", "-y",
+                   "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
+                   "-i", overlay_path,
+                   "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                   "-t", f"{duration:.3f}",
+                   "-filter_complex", "[0:v][1:v]overlay=0:0[v]",
+                   "-map", "[v]", "-map", "2:a",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
+                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                   out_path]
+    else:
+        # Frames + audio only (no overlay)
+        if audio_file and os.path.exists(audio_file):
+            cmd = ["ffmpeg", "-y",
+                   "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
+                   "-i", audio_file,
+                   "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
+                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                   "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
+                   out_path]
+        else:
+            cmd = ["ffmpeg", "-y",
+                   "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
+                   "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                   "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
+                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                   out_path]
+
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        if r.returncode != 0:
+            print(f"  [Quest] FFmpeg error: {r.stderr[-200:]}")
+            return False
+    except Exception as e:
+        print(f"  [Quest] Error: {e}")
+        return False
+    finally:
+        shutil.rmtree(frames_dir, ignore_errors=True)
+
+    return True
+
+
 def compose_quest(
     work_dir: str,
     pose_images: list[list[str]],
@@ -191,6 +362,7 @@ def compose_quest(
     scene_img: str,
     srt_dir: str,
     pad: float = 5.0,
+    host_poses: list[str] | None = None,
     progress_cb=None,
 ) -> str:
     """Compose the final quest (task-hook slow listening) video — stop-motion.
@@ -200,11 +372,12 @@ def compose_quest(
         pose_images: Per-line list of pose image paths (pose_{speaker}_{j}.png).
         timeline: From build_quest_timeline (audio_dur enriched).
         script: Quest script dict.
-        narration: {"hook": path, "outro": path}.
+        narration: {"welcome": path, "hook": path, "outro": path}.
         normal_paths: English dialogue audio paths (slow speed).
         scene_img: Scene background image path.
         srt_dir: Directory used as FFmpeg cwd for the subtitle burn.
         pad: Silence pad after dialogue lines (seconds).
+        host_poses: Pose image paths for the host/narrator character.
         progress_cb: callback(percent, message).
 
     Returns:
@@ -237,11 +410,14 @@ def compose_quest(
         out_path = str(tmp_dir / f"seg_{seg_idx:03d}.mp4")
         seg_idx += 1
 
+        cmd = None  # FFmpeg cmd for static segments; None for stop-motion segments
         audio_file = None
         audio_dur = seg.get("audio_dur", duration - pad)
 
         if seg_type == "dialogue":
             audio_file = normal_paths[audio_idx] if audio_idx < len(normal_paths) else None
+        elif seg_type == "welcome":
+            audio_file = narration.get("welcome")
         elif seg_type == "hook_intro":
             audio_file = narration.get("hook")
         elif seg_type == "outro":
@@ -268,25 +444,43 @@ def compose_quest(
                    "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                    out_path]
 
+        elif seg_type == "welcome":
+            # Host stop-motion + welcome audio
+            h_poses = host_poses or [scene_img]
+            frames_dir = work / "sm_frames" / f"welcome_{seg_idx}"
+            cache_dir = work / "sm_frames"
+            success = _render_sm_segment(
+                h_poses, scene_img, audio_file, out_path, duration,
+                frames_dir, cache_dir,
+                overlay_path=None,
+                seed=hash("welcome") % 1000,
+                direction=1, fade_af=fade_af,
+            )
+            if not success:
+                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
+                       "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                       "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps=24",
+                       "-map", "0:v:0", "-map", "1:a:0",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                       out_path]
+
         elif seg_type == "hook_intro":
-            # Static scene + listening-task card + narrator audio
+            # Host stop-motion + listening-task card overlay + narrator audio
             hook_overlay = str(static_dir / "hook_overlay.png")
             _render_hook_frame(hook_en, question_en, question_zh, scene_img,
                                hook_overlay)
-            out_dur = audio_dur + pad
-            hook_audio = narration.get("hook")
-            if hook_audio and os.path.exists(hook_audio):
-                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
-                       "-i", hook_audio, "-i", hook_overlay,
-                       "-t", f"{out_dur:.3f}",
-                       "-filter_complex",
-                       f"[0:v]{VF_NORM}[bg];[bg][2:v]overlay=0:0[v];"
-                       f"[1:a]{fade_af},apad=whole_dur={out_dur:.3f}[a]",
-                       "-map", "[v]", "-map", "[a]",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
-                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                       out_path]
-            else:
+            h_poses = host_poses or [scene_img]
+            frames_dir = work / "sm_frames" / f"hook_{seg_idx}"
+            cache_dir = work / "sm_frames"
+            success = _render_sm_segment(
+                h_poses, scene_img, audio_file, out_path, duration,
+                frames_dir, cache_dir,
+                overlay_path=hook_overlay,
+                seed=hash("hook") % 1000,
+                direction=1, fade_af=fade_af,
+            )
+            if not success:
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                        "-i", hook_overlay,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
@@ -298,23 +492,20 @@ def compose_quest(
                        out_path]
 
         elif seg_type == "outro":
-            # Static scene + answer/CTA card + narrator audio
+            # Host stop-motion + answer/CTA card overlay + narrator audio
             outro_overlay = str(static_dir / "outro_overlay.png")
             _render_outro_frame(question_en, question_zh, scene_img, outro_overlay)
-            out_dur = audio_dur + pad
-            outro_audio = narration.get("outro")
-            if outro_audio and os.path.exists(outro_audio):
-                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
-                       "-i", outro_audio, "-i", outro_overlay,
-                       "-t", f"{out_dur:.3f}",
-                       "-filter_complex",
-                       f"[0:v]{VF_NORM}[bg];[bg][2:v]overlay=0:0[v];"
-                       f"[1:a]{fade_af},apad=whole_dur={out_dur:.3f}[a]",
-                       "-map", "[v]", "-map", "[a]",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
-                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                       out_path]
-            else:
+            h_poses = host_poses or [scene_img]
+            frames_dir = work / "sm_frames" / f"outro_{seg_idx}"
+            cache_dir = work / "sm_frames"
+            success = _render_sm_segment(
+                h_poses, scene_img, audio_file, out_path, duration,
+                frames_dir, cache_dir,
+                overlay_path=outro_overlay,
+                seed=hash("outro") % 1000,
+                direction=-1, fade_af=fade_af,
+            )
+            if not success:
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                        "-i", outro_overlay,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
@@ -326,110 +517,29 @@ def compose_quest(
                        out_path]
 
         elif seg_type == "dialogue":
-            # Stop-motion: render frames from character poses + background
+            # Stop-motion: render frames from character poses with random schedule
             idx = min(audio_idx, len(pose_images) - 1) if pose_images else 0
             line_poses = pose_images[idx] if pose_images and idx < len(pose_images) else []
             if not line_poses:
                 line_poses = [scene_img]
-
-            # Use stop_motion renderer for this dialogue segment
-            from stop_motion import (
-                remove_bg, normalize_pose, generate_morph_frames,
-                render_frame, compute_landing, POSE_CENTER_Y, DELIVERY_FPS,
-            )
             frames_dir = work / "sm_frames" / f"dialogue_{audio_idx}"
-            frames_dir.mkdir(parents=True, exist_ok=True)
-
-            # Process poses: rembg + normalize (cache per character)
-            processed = []
-            bg_img = None
-            for p_path in line_poses:
-                if not os.path.exists(p_path):
-                    processed.append(None)
-                    continue
-                cache_path = work / "sm_frames" / f"cutout_{Path(p_path).stem}.png"
-                if cache_path.exists():
-                    processed.append(Image.open(cache_path).convert("RGBA"))
-                else:
-                    raw = Image.open(p_path)
-                    alpha = remove_bg(raw)
-                    norm = normalize_pose(alpha)
-                    norm.save(str(cache_path))
-                    processed.append(norm)
-            processed = [p for p in processed if p is not None]
-            if not processed:
-                processed = [Image.new("RGBA", (1280, 720), (0,0,0,0))]
-
-            # Load background
-            if bg_img is None:
-                bg_img = Image.open(scene_img).convert("RGBA").resize((1280, 720))
-
-            # Render frames with pose cycling + landing transform
-            total_frames = round(duration * DELIVERY_FPS)
-            n_poses = len(processed)
+            cache_dir = work / "sm_frames"
             direction = 1 if audio_idx % 2 == 0 else -1
-            cx = 1280 / 2
-            cy = POSE_CENTER_Y
-
-            # Pre-generate morph frames if >1 pose and cv2 available
-            morph_frames = []
-            if n_poses >= 2:
-                try:
-                    morph_frames = generate_morph_frames(processed[0], processed[1], n_frames=5)
-                except Exception:
-                    morph_frames = []
-            morph_n = len(morph_frames)
-            morph_dur = 0.2 if morph_n > 0 else 0
-
-            for fidx in range(total_frames):
-                t = fidx / DELIVERY_FPS
-                # Cycle through poses
-                if n_poses == 1:
-                    pose = processed[0]
-                    landing = compute_landing(t, direction=direction)
-                elif morph_n > 0 and t < morph_dur:
-                    mi = min(morph_n - 1, int(t / morph_dur * morph_n))
-                    pose = morph_frames[mi]
-                    landing = {"scale":0,"x":0,"y":0,"rotation":0}
-                else:
-                    pose_idx = min(n_poses - 1, int(t / max(duration, 0.01) * n_poses))
-                    pose = processed[pose_idx]
-                    local_t = t - (pose_idx * duration / n_poses)
-                    landing = compute_landing(local_t, direction=direction)
-
-                scale = 1.0 + landing["scale"]
-                frame = render_frame(bg_img, pose, cx + landing["x"],
-                                     cy + landing["y"], scale, landing["rotation"],
-                                     centered=True)
-                frame.save(str(frames_dir / f"frame-{fidx:04d}.png"), compress_level=2)
-
-            # Encode frames → mp4
-            frame_pattern = str(frames_dir / "frame-%04d.png")
-            if audio_file and os.path.exists(audio_file):
-                cmd = ["ffmpeg", "-y",
-                       "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
-                       "-i", audio_file,
-                       "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
-                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                       "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
-                       out_path]
-            else:
-                cmd = ["ffmpeg", "-y",
-                       "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
+            success = _render_sm_segment(
+                line_poses, scene_img, audio_file, out_path, duration,
+                frames_dir, cache_dir,
+                overlay_path=None,
+                seed=audio_idx * 7 + 13,
+                direction=direction, fade_af=fade_af,
+            )
+            if not success:
+                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                       "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
+                       "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps=24",
+                       "-map", "0:v:0", "-map", "1:a:0",
+                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                        out_path]
-            # Run and cleanup frames
-            try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-                if r.returncode != 0:
-                    print(f"  [Quest] FFmpeg error dialogue {audio_idx}: {r.stderr[-200:]}")
-            except Exception as e:
-                print(f"  [Quest] Error dialogue {audio_idx}: {e}")
-            shutil.rmtree(frames_dir, ignore_errors=True)
         else:
             # Unknown segment type — silent static placeholder keeps timeline intact
             cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
@@ -440,28 +550,30 @@ def compose_quest(
                    "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                    out_path]
 
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        except subprocess.TimeoutExpired:
-            print(f"  FFmpeg TIMEOUT (300s) on seg {seg_idx} ({seg_type}), using fallback")
-            r = None
-        if r is None or r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-            print(f"  FFmpeg error seg {seg_idx}: {r.stderr[-200:] if r else 'timeout'}")
-            fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
-                            "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                            "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps=24",
-                            "-map", "0:v:0", "-map", "1:a:0",
-                            "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                            out_path]
+        # --- Common FFmpeg execution (only for segments that set cmd) ---
+        if cmd is not None:
             try:
-                r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+                r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             except subprocess.TimeoutExpired:
-                print(f"  Fallback also timed out, skipping segment {seg_idx}")
-                continue
-            if r2.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-                print(f"  Fallback also failed, skipping segment: {r2.stderr[-200:]}")
-                continue
+                print(f"  FFmpeg TIMEOUT (300s) on seg {seg_idx} ({seg_type}), using fallback")
+                r = None
+            if r is None or r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+                print(f"  FFmpeg error seg {seg_idx}: {r.stderr[-200:] if r else 'timeout'}")
+                fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
+                                "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                                "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps=24",
+                                "-map", "0:v:0", "-map", "1:a:0",
+                                "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                                out_path]
+                try:
+                    r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+                except subprocess.TimeoutExpired:
+                    print(f"  Fallback also timed out, skipping segment {seg_idx}")
+                    continue
+                if r2.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+                    print(f"  Fallback also failed, skipping segment: {r2.stderr[-200:]}")
+                    continue
         segments.append(out_path)
         _cb(int(seg_idx / total_segs * 80),
             f"  Segment {seg_idx}/{total_segs} ({seg_type})")
