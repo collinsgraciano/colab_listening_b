@@ -240,6 +240,7 @@ def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
     final_path = str(work / f"{safe_filename(script.get('youtube_title', script.get('title', 'final_video')))}.mp4")
 
     # Extract subtitle entries from timeline
+    import re as _re
     subtitle_entries = []
     t_cursor = 0.0
     for seg in timeline:
@@ -250,12 +251,32 @@ def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
             zh = seg.get("subtitle_zh", "")
             audio_d = seg.get("audio_dur", dur - pad)
             if en or zh:
-                subtitle_entries.append({
-                    "start": t_cursor,
-                    "end": t_cursor + audio_d,
-                    "en": en,
-                    "zh": zh,
-                })
+                # Split long narration into sentence-level subtitles
+                sentences = _re.split(r'(?<=[.!?])\s+', en.strip())
+                if len(sentences) > 1:
+                    # Distribute sentences evenly across the segment's audio duration
+                    total_chars = sum(len(s) for s in sentences)
+                    sent_start = t_cursor
+                    for si, sent in enumerate(sentences):
+                        sent_frac = len(sent) / max(total_chars, 1)
+                        sent_dur = audio_d * sent_frac
+                        # Try to find matching ZH sentence (split by 。！？)
+                        zh_sentences = _re.split(r'(?<=[。！？])\s*', zh.strip()) if zh else []
+                        sent_zh = zh_sentences[si] if si < len(zh_sentences) else ""
+                        subtitle_entries.append({
+                            "start": sent_start,
+                            "end": sent_start + sent_dur,
+                            "en": sent.strip(),
+                            "zh": sent_zh.strip(),
+                        })
+                        sent_start += sent_dur
+                else:
+                    subtitle_entries.append({
+                        "start": t_cursor,
+                        "end": t_cursor + audio_d,
+                        "en": en,
+                        "zh": zh,
+                    })
         t_cursor += dur
 
     if not subtitle_entries:

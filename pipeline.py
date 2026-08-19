@@ -295,9 +295,11 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
     char_b_desc = script.get("char_b_description", "friendly young woman")
     scene = script.get("scene") or args.topic
 
+    _QUEST_STYLE = "3D cartoon style, Pixar-like, warm soft lighting, cel-shaded, vibrant saturated colors, smooth surfaces"
+
     image_prompts = [
-        (f"Character design sheet, {char_a_desc} on the left, {char_b_desc} on the right, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_scene.png"),
-        (f"Scene background, {scene}, wide shot, showing all key elements of the scene, 3D cartoon style, no characters, no text, 16:9", "scene.png"),
+        (f"Character design sheet, {char_a_desc} on the left, {char_b_desc} on the right, plain white background, full body, front view, {_QUEST_STYLE}, no text, no background, 16:9", "char_scene.png"),
+        (f"Scene background, {scene}, wide shot, showing all key elements of the scene, {_QUEST_STYLE}, no characters, no text, 16:9", "scene.png"),
     ]
     if is_stop_motion:
         # Per-character three-view reference sheets for pose consistency
@@ -310,8 +312,8 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         image_prompts.append(
             (f"Character design sheet, {char_a_desc} on the left, {char_c_desc} on the right, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_scene_c.png"))
         # Host background (TV studio)
-        host_bg_prompt = script.get("host_bg_prompt", "a bright modern TV studio set with a large screen behind, warm lighting, 3D cartoon style, no people, 16:9")
-        image_prompts.append((host_bg_prompt, "host_bg.png"))
+        host_bg_prompt = script.get("host_bg_prompt", "a bright modern TV studio set with a large screen behind, warm lighting")
+        image_prompts.append((f"{host_bg_prompt}, {_QUEST_STYLE}, no people, 16:9", "host_bg.png"))
         # Multiple scene backgrounds for dialogue variety
         scene_images = script.get("scene_images", [])
         for si, si_data in enumerate(scene_images[:5]):
@@ -626,10 +628,10 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
         )
     elif args.structure == "quest":
         from quest.video_compose_quest import compose_quest
-        # Build per-character pose map (dialogue chars: 4 poses, host: 8 poses)
+        # Build per-character pose map (all chars: 8 poses each)
         char_pose_map = {}
         for ck in ("char_a", "char_b", "char_c"):
-            poses = [str(dirs["images"] / f"pose_{ck}_{j}.png") for j in range(4)]
+            poses = [str(dirs["images"] / f"pose_{ck}_{j}.png") for j in range(8)]
             if all(os.path.exists(p) for p in poses):
                 char_pose_map[ck] = poses
         # Host: 8 poses

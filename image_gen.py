@@ -318,15 +318,19 @@ def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
 def generate_quest_atlases(script, img_dir, tts_thread):
     """Generate character pose atlases for quest mode.
 
-    Dialogue characters (char_a, char_b, char_c): 2×2 grid (4 poses each).
-    Host: 4×2 grid (8 poses) — more variety for longer narration segments.
+    All characters (char_a, char_b, char_c, host): 4×2 grid (8 poses each).
+    Shared style prefix ensures visual consistency across all characters.
     """
     from PIL import Image as PILImage
 
+    _STYLE = ("3D cartoon style, Pixar-like, warm soft lighting, "
+              "cel-shaded with thin clean black outline, "
+              "vibrant saturated colors, smooth surfaces")
+
     chars = [
-        ("char_a", script.get("char_a_description", "friendly young man"), 4),
-        ("char_b", script.get("char_b_description", "friendly young woman"), 4),
-        ("char_c", script.get("char_c_description", "friendly staff member"), 4),
+        ("char_a", script.get("char_a_description", "friendly young man"), 8),
+        ("char_b", script.get("char_b_description", "friendly young woman"), 8),
+        ("char_c", script.get("char_c_description", "friendly staff member"), 8),
         ("host", script.get("host_description", "friendly young woman with short brown hair, wearing a smart blue blazer, warm smile, professional TV host appearance"), 8),
     ]
     # Also generate per-character half-body reference images
@@ -369,7 +373,7 @@ def generate_quest_atlases(script, img_dir, tts_thread):
             except Exception:
                 pass
 
-    # Generate atlases
+    # Generate atlases — all characters use 4×2 (8 poses)
     for char_key, char_desc, n_poses in chars:
         all_exist = all(
             os.path.exists(str(img_dir / f"pose_{char_key}_{j}.png"))
@@ -380,38 +384,19 @@ def generate_quest_atlases(script, img_dir, tts_thread):
             continue
 
         atlas_path = str(img_dir / f"pose_atlas_{char_key}.png")
-        if n_poses == 8:
-            # 4×2 grid (4 columns, 2 rows) for host — 8 poses
-            atlas_prompt = (
-                f"4×2 grid character pose sheet, eight poses of the same character, "
-                f"{char_desc}, "
-                f"top row left to right: speaking with mouth open, listening with slight smile, "
-                f"thinking with hand on chin, surprised with raised eyebrows, "
-                f"bottom row left to right: nodding in agreement, waving right hand, "
-                f"pointing forward, laughing with eyes closed, "
-                f"half-body close-up, waist up, all eight poses same character same outfit, "
-                f"plain white background, 3D cartoon style, "
-                f"cel-shaded with thin clean black outline tightly hugging the character silhouette, "
-                f"no props, no objects, no scene, no text"
-            )
-            grid_w, grid_h = 4, 2
-            img_size = {"width": 2560, "height": 1280}
-        else:
-            # 2×2 grid for dialogue characters — 4 poses
-            atlas_prompt = (
-                f"2×2 grid character pose sheet, four poses of the same character, "
-                f"{char_desc}, "
-                f"top-left: speaking with mouth open and expressive gesture, "
-                f"top-right: listening with a slight smile, relaxed posture, "
-                f"bottom-left: thinking with hand on chin, "
-                f"bottom-right: surprised with raised eyebrows, "
-                f"half-body close-up, waist up, all four poses same character same outfit, "
-                f"plain white background, 3D cartoon style, "
-                f"cel-shaded with thin clean black outline tightly hugging the character silhouette, "
-                f"no props, no objects, no scene, no text"
-            )
-            grid_w, grid_h = 2, 2
-            img_size = {"width": 1280, "height": 1280}
+        atlas_prompt = (
+            f"4x2 grid character pose sheet, eight poses of the same character, "
+            f"{char_desc}, "
+            f"top row left to right: speaking with mouth open, listening with slight smile, "
+            f"thinking with hand on chin, surprised with raised eyebrows, "
+            f"bottom row left to right: nodding in agreement, waving right hand, "
+            f"pointing forward, laughing with eyes closed, "
+            f"half-body close-up, waist up, all eight poses same character same outfit, "
+            f"plain white background, {_STYLE}, "
+            f"no props, no objects, no scene, no text"
+        )
+        grid_w, grid_h = 4, 2
+        img_size = {"width": 2560, "height": 1280}
 
         print(f"  [QuestAtlas] Generating {grid_w}×{grid_h} atlas for {char_key} ({n_poses} poses)...")
         try:
@@ -457,4 +442,4 @@ def generate_quest_atlases(script, img_dir, tts_thread):
         except Exception as e:
             print(f"    [QuestAtlas] ERROR {char_key}: {e}")
 
-    print(f"  [QuestAtlas] Done — 3 dialogue chars × 4 poses + host × 8 poses = 20 pose images.")
+    print(f"  [QuestAtlas] Done — 4 characters × 8 poses = 32 pose images.")
