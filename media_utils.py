@@ -220,7 +220,7 @@ def concat_segments(segment_paths: list[str], output_path: str,
 def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
                    work_dir: str, srt_dir: str, pad: float = 0.4,
                    progress_cb=None,
-                   subtitle_seg_types: tuple[str, ...] = ("dialogue",)) -> str:
+                   subtitle_seg_types: tuple[str, ...] = ("dialogue", "welcome", "hook_intro", "outro")) -> str:
     """Render dialogue subtitles via Pillow and burn them onto the video.
 
     Extracts subtitle entries from timeline segments whose type is in
@@ -446,9 +446,9 @@ def build_srt(timeline: list[dict], skip_types: set[str] | None = None,
     enhanced.build_srt_from_timeline_enhanced, quest.build_srt_from_timeline_quest.
     """
     if skip_types is None:
-        skip_types = {"listen_en", "listen_zh", "practice", "title_card",
-                      "practice_intro", "outro", "vocab", "quiz",
-                      "dialogue_slow", "hook_intro"}
+        skip_types = {"listen_en", "listen_zh", "practice",
+                      "practice_intro", "vocab", "quiz",
+                      "dialogue_slow"}
 
     srt_lines = []
     idx = 1

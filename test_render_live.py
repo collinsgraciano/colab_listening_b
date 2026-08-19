@@ -93,7 +93,7 @@ for i, line in enumerate(dialogue):
 # --- Build timeline ---
 print("\n--- Building timeline ---")
 from quest.timeline_quest import build_quest_timeline
-pad = 5.0
+pad = 0.4
 timeline = build_quest_timeline(script, dialogue_durations, pad=pad)
 print(f"  Timeline segments: {len(timeline)}")
 for seg in timeline:

@@ -189,21 +189,19 @@ def _build_pose_schedule(n_poses: int, total_frames: int, fps: float,
                          seed: int, is_speaker: bool = True) -> list[tuple[int, int]]:
     """Build a randomized pose schedule: list of (pose_idx, start_frame).
 
-    Speaker: switches pose every 0.4-1.2s (frequent, natural talking).
-    Listener: switches pose every 1.0-3.0s (subtle, occasional nods/reactions).
-    First pose is always 0 (speaking) for speaker, 1 (listening) for listener.
+    Speaker: switches pose every 2.0-5.0s (slow, natural talking pace).
+    Listener: always static — no schedule needed (caller uses pose index 1).
+    First pose is always 0 (speaking) for speaker.
     Consecutive poses are always different.
     """
     rng = random.Random(seed)
-    if n_poses <= 1:
-        return [(0, 0)] if is_speaker else [(min(1, n_poses - 1), 0)]
+    if n_poses <= 1 or not is_speaker:
+        return [(0, 0)]
 
-    first_pose = 0 if is_speaker else 1
-    schedule = [(first_pose, 0)]
+    schedule = [(0, 0)]
     frame = 0
-    min_hold, max_hold = (0.4, 1.2) if is_speaker else (1.0, 3.0)
     while frame < total_frames:
-        hold = rng.uniform(min_hold, max_hold)
+        hold = rng.uniform(2.0, 5.0)
         frame += max(1, round(hold * fps))
         if frame < total_frames:
             current = schedule[-1][0]
@@ -332,12 +330,11 @@ def _render_sm_segment(
                 py = cy + landing["y"]
                 rot = landing["rotation"]
             else:
-                # Listener: subtle idle motion — small random sway
-                sway_x = rng.uniform(-3, 3)
-                sway_y = rng.uniform(-2, 2)
+                # Listener: completely static — no movement at all
+                pose = poses[1] if len(poses) > 1 else poses[0]
                 scale = 1.0
-                px = x + sway_x
-                py = cy + sway_y
+                px = x
+                py = cy
                 rot = 0.0
 
             from stop_motion import transform_pose, paste_with_shadow
