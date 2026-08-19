@@ -1,25 +1,13 @@
-"""Quest LLM client — task-hook slow-listening structure with 4-phase dialogue.
+"""Quest LLM client — multi-round generation for high-quality quest scripts.
 
-Structure mirrors a reference slow-listening video (welcome -> hook -> 4-phase
-dialogue -> loop-closing CTA), scene-agnostic so it works for ANY topic.
+4-round pipeline:
+  Round 1: Story outline (characters, question, key_words, phase summaries)
+  Round 2: Per-phase dialogue (buildup→core→reveal→review, each independent)
+  Round 3: Narration + metadata (hook_intro, outro, youtube_*)
+  Round 4: Per-line enhancement (phonetic, zh, on_screen, image_prompt)
 
-4-phase dialogue: buildup -> core -> reveal -> review.
-- buildup: question arises naturally between two friends
-- core: mixed speakers (char_a/b/c) — education + transaction
-- reveal: answer exposed inside dialogue
-- review: friends confirm answer, evaluate experience
-
-Includes a HOST character (节目主) who appears on-screen in Welcome, Hook,
-and Outro segments via stop-motion animation.
-
-Extends the original llm_client prompt with:
-- char_c: a third character (service staff) for the core phase
-- host: a fourth character (narrator/host) for narration segments
-- dialogue lines carry "phase": "buildup" | "core" | "reveal" | "review"
-- listening_question_*: the bait question whose answer is revealed in dialogue
-- hook_intro_*: narrator opening (slow speech + assign listening task)
-- welcome_*: short channel welcome line
-- key_words: 5-8 target vocabulary items repeated 3+ times in the dialogue
+Each round produces small JSON output (2-5K tokens) for higher quality.
+Previous rounds' output feeds into subsequent rounds for continuity.
 
 Reuses _chat, _extract_json, _load_used_listening_summaries from parent llm_client.
 """
@@ -231,99 +219,144 @@ Topic: {topic}"""
 def generate_quest_script(topic: str, cefr: str = "A1",
                           lessons_dir: str = None,
                           num_lines: int = 48) -> dict:
-    """Generate a quest (task-hook slow listening) lesson script.
+    """Generate a quest lesson script via multi-round LLM calls.
 
-    Returns script dict with all original fields PLUS quest fields:
-    - dialogue[].phase (4 phases: buildup/core/reveal/review), char_c_*,
-      listening_question_*, hook_intro_*, welcome_*, key_words, extended outro
+    Round 1: Story outline (characters, question, key_words, phase summaries)
+    Round 2: Per-phase dialogue generation (buildup→core→reveal→review)
+    Round 3: Narration + metadata (hook_intro, outro, youtube_*)
+    Round 4: Per-line enhancement (phonetic, zh, on_screen, image_prompt)
+
+    Returns assembled script dict with all fields.
     """
     import json
     import time
 
     n_buildup, n_core, n_reveal, n_review = split_phase_lines(num_lines)
     used_summaries = _load_used_listening_summaries(lessons_dir)
-    prompt = _build_quest_prompt(topic, cefr, used_dialogues=used_summaries,
-                                 num_lines=num_lines,
-                                 n_buildup=n_buildup, n_core=n_core,
-                                 n_reveal=n_reveal, n_review=n_review)
 
-    last_error = None
-    content = ""
-    for attempt in range(3):
-        try:
-            content = _chat(
-                [{"role": "user", "content": prompt}],
-                temperature=0.8 if attempt == 0 else 0.7,
-                max_tokens=16384,
-            )
-            script = _extract_json(content)
-            break
-        except (json.JSONDecodeError, RuntimeError) as e:
-            last_error = e
-            err_str = str(e)
-            if isinstance(e, json.JSONDecodeError):
-                print(f"  [LLM quest retry {attempt+1}/3] JSONDecodeError: {err_str[:200]}")
-                print(f"  [LLM] Raw content (first 300 chars): {content[:300] if content else 'N/A'}")
-            else:
-                print(f"  [LLM quest retry {attempt+1}/3] {type(e).__name__}: {err_str[:200]}")
-            if attempt < 2:
-                time.sleep(5)
-    else:
-        raise RuntimeError(f"LLM script generation failed after 3 retries: {last_error}")
+    # ── Round 1: Story outline ──────────────────────────────────────────
+    print("  [LLM] Round 1: Story outline...")
+    outline_prompt = _build_outline_prompt(topic, cefr, used_summaries)
+    outline = _chat_and_parse(
+        outline_prompt, temperature=0.9, max_tokens=4096, reasoning_effort="medium",
+        label="outline")
 
-    script["lesson_type"] = "listening"
+    # ── Round 2: Per-phase dialogue ─────────────────────────────────────
+    print("  [LLM] Round 2: Dialogue generation (4 phases)...")
+    all_dialogue = []
 
-    # Original required fields
-    script.setdefault("story_hook", "")
-    script.setdefault("intro_zh", "")
-    script.setdefault("outro", "That's all for today. Keep practicing!")
-    script.setdefault("outro_zh", "")
-    script.setdefault("title", "")
-    script["cefr"] = script.get("cefr") or cefr
-    script.setdefault("title_zh", script.get("intro_zh", ""))
-    script.setdefault("practice_intro_en", "Now let's practice. Listen and repeat each sentence.")
-    script.setdefault("practice_intro_zh", "現在來練習。請跟著朗讀每一句。")
-    script.setdefault("char_a_description", "")
-    script.setdefault("char_b_description", "")
-    script.setdefault("char_a_gender", "male")
-    script.setdefault("char_b_gender", "female")
-    script.setdefault("char_a_role", "")
-    script.setdefault("char_b_role", "")
-    script.setdefault("youtube_title", "")
-    script.setdefault("youtube_description", "")
-    script.setdefault("youtube_tags", [])
-    script.setdefault("thumbnail_prompt", "")
-    script.setdefault("scene", "")
-    script.setdefault("scene_images", [{"prompt": f"a {script.get('scene', 'shop')} interior, 3D cartoon style, 16:9, no people", "label": "main"}])
-    script.setdefault("thumbnail_expression", "surprised and excited")
-    script.setdefault("thumbnail_action", "looking toward the camera and gesturing naturally")
-    script.setdefault("thumbnail_subtitle", "慢速聽力")
-    script.setdefault("thumbnail_icons", [])
+    # 2a: Buildup
+    buildup_lines = _generate_phase_dialogue(
+        "buildup", outline, n_buildup, prev_lines=None, cefr=cefr, temperature=0.85)
+    all_dialogue.extend(buildup_lines)
+    print(f"    buildup: {len(buildup_lines)} lines")
 
-    # Quest-specific fields
-    script.setdefault("welcome_en", "Welcome to English listening channel.")
-    script.setdefault("welcome_zh", "歡迎來到英文聽力頻道。")
-    script.setdefault("host_description", "a friendly young woman with short brown hair, wearing a smart blue blazer, warm smile, professional TV host appearance")
-    script.setdefault("host_gender", "female")
-    script.setdefault("host_bg_prompt", "a bright modern TV studio set with a large screen behind, warm lighting, plants on the side, professional news desk feel, 3D cartoon style, no people")
-    script.setdefault("char_c_description", "")
-    script.setdefault("char_c_gender", "female")
-    script.setdefault("char_c_role", "staff")
-    script.setdefault("listening_question_en", "")
-    script.setdefault("listening_question_zh", "")
-    script.setdefault("hook_intro_en", "")
-    script.setdefault("hook_intro_zh", "")
-    script.setdefault("key_words", [])
+    # 2b: Core (may split into 2 batches if >15 lines)
+    core_batch_size = 15
+    core_generated = []
+    prev = buildup_lines[-3:] if len(buildup_lines) >= 3 else buildup_lines
+    remaining = n_core
+    while remaining > 0:
+        batch = min(remaining, core_batch_size)
+        lines = _generate_phase_dialogue(
+            "core", outline, batch, prev_lines=prev, cefr=cefr, temperature=0.7)
+        core_generated.extend(lines)
+        prev = lines[-3:] if len(lines) >= 3 else lines
+        remaining -= batch
+        if remaining > 0:
+            time.sleep(2)  # avoid rate limit
+    all_dialogue.extend(core_generated)
+    print(f"    core: {len(core_generated)} lines")
 
-    # Per-line defaults; repair missing "phase" by position (buildup->core->reveal->review)
-    dialogue = script.get("dialogue", [])
-    for i, line in enumerate(dialogue):
+    # 2c: Reveal
+    reveal_lines = _generate_phase_dialogue(
+        "reveal", outline, n_reveal, prev_lines=prev, cefr=cefr, temperature=0.8)
+    all_dialogue.extend(reveal_lines)
+    print(f"    reveal: {len(reveal_lines)} lines")
+
+    # 2d: Review
+    review_lines = _generate_phase_dialogue(
+        "review", outline, n_review, prev_lines=reveal_lines[-3:] if len(reveal_lines) >= 3 else reveal_lines,
+        cefr=cefr, temperature=0.75)
+    all_dialogue.extend(review_lines)
+    print(f"    review: {len(review_lines)} lines")
+
+    # ── Quick quality check ─────────────────────────────────────────────
+    _quality_check(all_dialogue, outline)
+
+    # ── Round 3: Narration + metadata ───────────────────────────────────
+    print("  [LLM] Round 3: Narration + metadata...")
+    meta_prompt = _build_metadata_prompt(topic, cefr, outline, all_dialogue)
+    meta = _chat_and_parse(
+        meta_prompt, temperature=0.6, max_tokens=8192, reasoning_effort="low",
+        label="metadata")
+
+    # ── Round 4: Per-line enhancement ───────────────────────────────────
+    print("  [LLM] Round 4: Per-line enhancement...")
+    enhance_prompt = _build_enhance_prompt(all_dialogue, outline)
+    enhanced = _chat_and_parse(
+        enhance_prompt, temperature=0.3, max_tokens=8192, reasoning_effort="low",
+        label="enhance")
+
+    # Merge enhanced fields into dialogue
+    if isinstance(enhanced, list) and len(enhanced) == len(all_dialogue):
+        for i, enh in enumerate(enhanced):
+            all_dialogue[i].setdefault("phonetic", enh.get("phonetic", ""))
+            all_dialogue[i].setdefault("zh", enh.get("zh", ""))
+            all_dialogue[i].setdefault("on_screen", enh.get("on_screen", [all_dialogue[i].get("speaker", "char_a")]))
+            all_dialogue[i].setdefault("image_prompt", enh.get("image_prompt", ""))
+
+    # ── Assemble final script ──────────────────────────────────────────
+    script = {
+        "lesson_type": "listening",
+        "title": meta.get("title", topic.upper()),
+        "cefr": cefr,
+        "title_zh": meta.get("title_zh", ""),
+        "scene_zh": meta.get("scene_zh", ""),
+        "story_hook": outline.get("story_concept", ""),
+        "intro_zh": meta.get("intro_zh", ""),
+        "welcome_en": meta.get("welcome_en", "Welcome to English listening channel."),
+        "welcome_zh": meta.get("welcome_zh", "歡迎來到英文聽力頻道。"),
+        "hook_intro_en": meta.get("hook_intro_en", ""),
+        "hook_intro_zh": meta.get("hook_intro_zh", ""),
+        "listening_question_en": outline.get("listening_question_en", ""),
+        "listening_question_zh": outline.get("listening_question_zh", ""),
+        "key_words": outline.get("key_words", []),
+        "outro": meta.get("outro", "That's all for today. Keep practicing!"),
+        "outro_zh": meta.get("outro_zh", ""),
+        "practice_intro_en": "Now let's practice. Listen and repeat each sentence.",
+        "practice_intro_zh": "現在來練習。請跟著朗讀每一句。",
+        "char_a_description": outline.get("char_a_description", ""),
+        "char_b_description": outline.get("char_b_description", ""),
+        "char_c_description": outline.get("char_c_description", ""),
+        "char_a_gender": outline.get("char_a_gender", "male"),
+        "char_b_gender": outline.get("char_b_gender", "female"),
+        "char_c_gender": outline.get("char_c_gender", "female"),
+        "char_a_role": outline.get("char_a_role", ""),
+        "char_b_role": outline.get("char_b_role", ""),
+        "char_c_role": outline.get("char_c_role", "staff"),
+        "host_description": outline.get("host_description", ""),
+        "host_gender": outline.get("host_gender", "female"),
+        "host_bg_prompt": meta.get("host_bg_prompt", "a bright modern TV studio set, 3D cartoon style, no people"),
+        "youtube_title": meta.get("youtube_title", ""),
+        "youtube_description": meta.get("youtube_description", ""),
+        "youtube_tags": meta.get("youtube_tags", []),
+        "thumbnail_prompt": meta.get("thumbnail_prompt", ""),
+        "scene": outline.get("scene", topic.lower()),
+        "scene_images": meta.get("scene_images", []),
+        "thumbnail_expression": meta.get("thumbnail_expression", "surprised and excited"),
+        "thumbnail_action": meta.get("thumbnail_action", "gesturing naturally"),
+        "thumbnail_subtitle": meta.get("thumbnail_subtitle", "慢速聽力"),
+        "thumbnail_icons": meta.get("thumbnail_icons", []),
+        "dialogue": all_dialogue,
+    }
+
+    # Ensure per-line defaults
+    for i, line in enumerate(script["dialogue"]):
         line.setdefault("phonetic", "")
         line.setdefault("zh", "")
         line.setdefault("image_prompt", "")
-        # Default on_screen to just the speaker if not specified
-        if not line.get("on_screen"):
-            line["on_screen"] = [line.get("speaker", "char_a")]
+        line.setdefault("on_screen", [line.get("speaker", "char_a")])
         if not line.get("phase"):
             if i < n_buildup:
                 line["phase"] = "buildup"
@@ -335,3 +368,292 @@ def generate_quest_script(topic: str, cefr: str = "A1",
                 line["phase"] = "review"
 
     return script
+
+
+# ---------------------------------------------------------------------------
+# Helper: chat + extract JSON with retry
+# ---------------------------------------------------------------------------
+
+def _chat_and_parse(prompt: str, temperature: float = 0.8, max_tokens: int = 8192,
+                    reasoning_effort: str = "low", label: str = "") -> dict:
+    """Call _chat, extract JSON, retry up to 3 times."""
+    import json
+    import time
+    last_error = None
+    for attempt in range(3):
+        try:
+            content = _chat(
+                [{"role": "user", "content": prompt}],
+                temperature=temperature,
+                max_tokens=max_tokens,
+                reasoning_effort=reasoning_effort,
+            )
+            return _extract_json(content)
+        except (json.JSONDecodeError, RuntimeError) as e:
+            last_error = e
+            print(f"  [LLM {label} retry {attempt+1}/3] {type(e).__name__}: {str(e)[:200]}")
+            if attempt < 2:
+                time.sleep(5)
+    raise RuntimeError(f"LLM {label} failed after 3 retries: {last_error}")
+
+
+# ---------------------------------------------------------------------------
+# Round 1: Story outline prompt
+# ---------------------------------------------------------------------------
+
+def _build_outline_prompt(topic: str, cefr: str, used_dialogues: list[str] = None) -> str:
+    used_hint = ""
+    if used_dialogues:
+        used_hint = f"""
+AVOID DUPLICATES — these scenarios already exist:
+{chr(10).join(f"  - {d}" for d in used_dialogues[:10])}
+"""
+    return f"""You are an expert ESL video director designing a SLOW LISTENING video story for overseas Chinese beginners.
+
+Topic: {topic}
+CEFR: {cefr}
+
+Design a story where the LISTENING QUESTION has a non-obvious answer — a fun fact or common misconception revealed INSIDE the dialogue (e.g. "Why is it called bubble tea?" not "What flavor did he order?").
+
+{used_hint}
+Output JSON ONLY:
+{{
+  "story_concept": "one-sentence story concept",
+  "listening_question_en": "the listening question (max 12 words, answer is a fun fact)",
+  "listening_question_zh": "繁體中文 translation",
+  "answer_en": "the true answer revealed in reveal phase",
+  "common_misconception_en": "what people commonly but wrongly think",
+  "scene": "English scene name (e.g. coffee shop)",
+  "char_a_description": "detailed physical description (gender, hair, clothing)",
+  "char_a_gender": "male or female",
+  "char_a_role": "role in story",
+  "char_b_description": "...",
+  "char_b_gender": "...",
+  "char_b_role": "...",
+  "char_c_description": "staff member description (uniform, etc.)",
+  "char_c_gender": "...",
+  "char_c_role": "...",
+  "host_description": "TV host appearance (separate from dialogue characters)",
+  "host_gender": "...",
+  "key_words": [{{"en": "word", "zh": "繁中"}}],
+  "buildup_summary": "3-5 sentence story summary for buildup phase",
+  "core_summary": "3-5 sentence story summary for core phase (include teaching + transaction)",
+  "reveal_summary": "3-5 sentence story summary for reveal phase",
+  "review_summary": "3-5 sentence story summary for review phase"
+}}
+
+Topic: {topic}"""
+
+
+# ---------------------------------------------------------------------------
+# Round 2: Per-phase dialogue generation
+# ---------------------------------------------------------------------------
+
+_PHASE_RULES = {
+    "buildup": (
+        'ONLY char_a and char_b speak. They discuss going to the place.\n'
+        'The LISTENING QUESTION arises naturally — one character is curious, the other says "you\'ll see" or "I\'ll tell you later".\n'
+        'Use at least 2 key_words. Include filler words ("well", "you know", "hmm", "actually").'
+    ),
+    "core": (
+        'char_a, char_b, AND char_c all speak. Include BOTH teaching (explaining options/menu/process) AND transaction (ordering, price, payment).\n'
+        'char_c (staff) must appear at least once per 5 lines.\n'
+        'Include a small surprise or interesting detail.\n'
+        'Use at least 3 key_words.'
+    ),
+    "reveal": (
+        'ONLY char_a and char_b. One friend reveals the ANSWER to the listening question.\n'
+        'The other is surprised ("Really? I thought...").\n'
+        'Use simple English to explain the fun fact. Use at least 2 key_words.'
+    ),
+    "review": (
+        'ONLY char_a and char_b. Confirm the answer (one asks again, other answers correctly).\n'
+        'Reuse key_words in new sentences. Express positive emotions.\n'
+        'Mention coming back. End with natural goodbye.'
+    ),
+}
+
+def _generate_phase_dialogue(phase: str, outline: dict, n_lines: int,
+                              prev_lines: list[dict] | None, cefr: str,
+                              temperature: float) -> list[dict]:
+    """Generate dialogue for one phase."""
+    import json
+
+    prev_hint = ""
+    if prev_lines:
+        prev_texts = [f"  {l.get('speaker','?')}: {l.get('text','')}" for l in prev_lines]
+        prev_hint = f"Previous lines (for continuity):\n{chr(10).join(prev_texts)}\n"
+
+    rules = _PHASE_RULES.get(phase, "")
+    question = outline.get("listening_question_en", "")
+    answer = outline.get("answer_en", "")
+    misconception = outline.get("common_misconception_en", "")
+    phase_summary = outline.get(f"{phase}_summary", "")
+    key_words = ", ".join(w.get("en", "") for w in outline.get("key_words", []))
+
+    if phase == "reveal":
+        extra = f"\nThe ANSWER to reveal: {answer}\nCommon misconception: {misconception}"
+    else:
+        extra = ""
+
+    prompt = f"""You are an ESL dialogue writer. Write {n_lines} lines of natural English dialogue for the "{phase}" phase.
+
+Story: {outline.get("story_concept", "")}
+Listening question: {question}
+Key words to use: {key_words}
+{extra}
+Phase summary: {phase_summary}
+
+{prev_hint}
+RULES:
+- CEFR {cefr} level. Each line 5-15 words (NOT limited to 10).
+- Natural conversational English with filler words ("well", "you know", "hmm", "actually", "oh").
+- Characters have personality — char_a is curious/energetic, char_b is calm/knowledgeable.
+- {rules}
+
+Output: JSON array of exactly {n_lines} objects:
+[{{"speaker": "char_a"|"char_b"|"char_c", "text": "English sentence", "phase": "{phase}", "emotion": "happy|curious|surprised|excited|calm|confused"}}]
+
+NO markdown, NO explanation. JSON array ONLY."""
+
+    result = _chat_and_parse(
+        prompt, temperature=temperature, max_tokens=4096,
+        reasoning_effort="medium", label=f"dialogue_{phase}")
+    if isinstance(result, list):
+        return result
+    if isinstance(result, dict) and "dialogue" in result:
+        return result["dialogue"]
+    return [result]
+
+
+# ---------------------------------------------------------------------------
+# Round 3: Narration + metadata prompt
+# ---------------------------------------------------------------------------
+
+def _build_metadata_prompt(topic: str, cefr: str, outline: dict, dialogue: list[dict]) -> str:
+    import json
+    dialogue_text = json.dumps(
+        [{"speaker": d.get("speaker",""), "text": d.get("text",""), "phase": d.get("phase","")}
+         for d in dialogue],
+        ensure_ascii=False, indent=2)
+    return f"""You are a YouTube content strategist. Generate narration and metadata for this ESL video.
+
+Topic: {topic} ({cefr})
+Listening question: {outline.get("listening_question_en","")}
+Answer: {outline.get("answer_en","")}
+Scene: {outline.get("scene","")}
+Characters: {outline.get("char_a_description","")} / {outline.get("char_b_description","")} / {outline.get("char_c_description","")}
+Host: {outline.get("host_description","")}
+
+Full dialogue:
+{dialogue_text}
+
+Generate JSON with these fields:
+{{
+  "title": "ENGLISH TITLE (e.g. AT THE COFFEE SHOP)",
+  "title_zh": "繁中短标题 (max 6 chars)",
+  "scene_zh": "繁中場景描述",
+  "intro_zh": "繁中 story hook translation",
+  "welcome_en": "short channel welcome (max 8 words)",
+  "welcome_zh": "繁中",
+  "hook_intro_en": "narrator opening 70-110 words: greeting→topic→slow speech promise→repeat listening question→answer inside video→comment CTA→let's begin",
+  "hook_intro_zh": "繁中",
+  "outro": "narrator closing 80-110 words: how was it→repeat question→comment CTA→channel description→subscribe→bye",
+  "outro_zh": "繁中",
+  "host_bg_prompt": "TV studio background prompt (3D cartoon, no people)",
+  "youtube_title": "高CTR繁中标题 with 【】and ｜ format, Pattern D preferred",
+  "youtube_description": "full description with chapters + key_words",
+  "youtube_tags": ["tag1","tag2",...],
+  "thumbnail_prompt": "thumbnail image prompt",
+  "thumbnail_expression": "main character expression",
+  "thumbnail_action": "main character action",
+  "thumbnail_subtitle": "繁中 short subtitle",
+  "thumbnail_icons": [{{"en":"word","zh":"繁中"}}],
+  "scene_images": [{{"prompt":"3D cartoon scene view, 16:9, no people","label":"counter"}}]
+}}
+
+JSON ONLY, no markdown."""
+
+
+# ---------------------------------------------------------------------------
+# Round 4: Per-line enhancement prompt
+# ---------------------------------------------------------------------------
+
+def _build_enhance_prompt(dialogue: list[dict], outline: dict) -> str:
+    import json
+    lines_json = json.dumps(
+        [{"i": i, "speaker": d.get("speaker",""), "text": d.get("text",""), "phase": d.get("phase","")}
+         for i, d in enumerate(dialogue)],
+        ensure_ascii=False, indent=2)
+    char_a = outline.get("char_a_description", "")
+    char_b = outline.get("char_b_description", "")
+    char_c = outline.get("char_c_description", "")
+    scene = outline.get("scene", "")
+    return f"""You are a phonetics expert and ESL teacher. Add phonetic, translation, and visual direction to each dialogue line.
+
+Characters:
+- char_a: {char_a}
+- char_b: {char_b}
+- char_c: {char_c}
+Scene: {scene}
+
+Dialogue lines:
+{lines_json}
+
+For each line, add:
+- "phonetic": IPA in /slashes/
+- "zh": 繁體中文 translation
+- "on_screen": array of visible characters (e.g. ["char_a","char_b"], ["char_a"], or [] for scene-only shot)
+  - buildup/review: mostly ["char_a","char_b"]
+  - core: mix of ["char_a","char_c"], ["char_b","char_c"], ["char_a","char_b"]
+  - Use [] (empty) for 2-4 lines total (environment/menu/object shots)
+- "image_prompt": scene image description (3D cartoon style, 16:9)
+
+Output: JSON array, same length and order as input:
+[{{"i": 0, "phonetic": "/.../ ", "zh": "繁中", "on_screen": ["char_a","char_b"], "image_prompt": "..."}}]
+
+JSON array ONLY."""
+
+
+# ---------------------------------------------------------------------------
+# Quality check
+# ---------------------------------------------------------------------------
+
+def _quality_check(dialogue: list[dict], outline: dict):
+    """Quick checks on generated dialogue."""
+    issues = []
+    # Check speakers per phase
+    for i, line in enumerate(dialogue):
+        speaker = line.get("speaker", "")
+        phase = line.get("phase", "")
+        if phase in ("buildup", "reveal", "review") and speaker == "char_c":
+            issues.append(f"  Line {i}: char_c should not appear in {phase}")
+        if not line.get("text"):
+            issues.append(f"  Line {i}: empty text")
+        # Check for char_a/char_b leakage in text
+        text = line.get("text", "")
+        for leak in ("char_a", "char_b", "char_c"):
+            if leak in text.lower():
+                issues.append(f"  Line {i}: field name '{leak}' leaked into text")
+    # Check key_words usage
+    key_words = [w.get("en", "") for w in outline.get("key_words", [])]
+    all_text = " ".join(d.get("text", "") for d in dialogue).lower()
+    for kw in key_words:
+        count = all_text.count(kw.lower())
+        if count < 2:
+            issues.append(f"  Key word '{kw}' appears only {count} times (need 3+)")
+    # Check answer in reveal
+    answer = outline.get("answer_en", "").lower()
+    reveal_text = " ".join(d.get("text", "") for d in dialogue if d.get("phase") == "reveal").lower()
+    if answer and len(answer) > 5 and answer[:10] not in reveal_text:
+        # Check if at least some answer keywords appear
+        answer_words = [w for w in answer.split() if len(w) > 3]
+        found = sum(1 for w in answer_words if w in reveal_text)
+        if found < len(answer_words) // 2:
+            issues.append(f"  Answer not clearly mentioned in reveal phase")
+    if issues:
+        print(f"  [Quality] {len(issues)} issues found:")
+        for issue in issues:
+            print(issue)
+    else:
+        print("  [Quality] All checks passed")

@@ -18,10 +18,11 @@ SENSENOVA_MODEL = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
 
 
 def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
-          max_tokens: int = 8192) -> str:
+          max_tokens: int = 8192, reasoning_effort: str = "low") -> str:
     """Call SenseNova LLM chat completion, return content string.
 
     Retries on HTTP 429 (rate limit) with exponential backoff.
+    reasoning_effort: "low" (fast, less thinking) or "medium" (more reasoning).
     """
     import time as _time
 
@@ -39,7 +40,7 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "reasoning_effort": "low",
+            "reasoning_effort": reasoning_effort,
         }
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
