@@ -185,19 +185,73 @@ def _render_outro_frame(question_en, question_zh, scene_img_path,
     frame.save(out_path, "PNG")
 
 
-def _build_pose_schedule(n_poses: int, total_frames: int, fps: float,
-                         seed: int, is_speaker: bool = True) -> list[tuple[int, int]]:
-    """Build a randomized pose schedule: list of (pose_idx, start_frame).
+def _compute_audio_rms_segments(audio_file: str, n_segments: int = 20) -> list[float]:
+    """Compute RMS energy segments from an audio file.
 
-    Speaker: switches pose every 2.0-5.0s (slow, natural talking pace).
-    Listener: always static — no schedule needed (caller uses pose index 1).
-    First pose is always 0 (speaking) for speaker.
-    Consecutive poses are always different.
+    Returns a list of n_segments float values (0..1) representing the
+    relative energy at evenly-spaced points in the audio.
+    Used to schedule pose switches at natural speech pauses.
+    """
+    import subprocess as _sp
+    import json as _json
+    try:
+        r = _sp.run(
+            ["ffmpeg", "-i", audio_file, "-af",
+             f"astats=metadata=1:reset={1.0/n_segments},ametadata=print:key=lavfi.astats.Overall.RMS_level",
+             "-f", "null", "-"],
+            capture_output=True, text=True, timeout=30)
+        lines = r.stderr.split("\n")
+        rms_vals = []
+        for line in lines:
+            if "RMS_level" in line:
+                try:
+                    val = float(line.split("=")[-1].strip())
+                    rms_vals.append(max(0, val))
+                except ValueError:
+                    pass
+        if rms_vals:
+            mx = max(rms_vals)
+            return [v / mx if mx > 0 else 0 for v in rms_vals]
+    except Exception:
+        pass
+    return [0.5] * n_segments
+
+
+def _build_pose_schedule(n_poses: int, total_frames: int, fps: float,
+                         seed: int, is_speaker: bool = True,
+                         audio_file: str | None = None) -> list[tuple[int, int]]:
+    """Build a pose schedule: list of (pose_idx, start_frame).
+
+    Speaker: switches pose at audio-driven pauses (low RMS points), or
+             every 2.0-5.0s if no audio. Consecutive poses always differ.
+    Listener: always static — caller uses fixed pose.
     """
     rng = random.Random(seed)
     if n_poses <= 1 or not is_speaker:
         return [(0, 0)]
 
+    # Try audio-driven scheduling
+    if audio_file and os.path.exists(audio_file):
+        rms = _compute_audio_rms_segments(audio_file, n_segments=max(20, total_frames // max(1, fps)))
+        # Find low-energy points (pauses) — at least 2s apart
+        min_hold_frames = round(2.0 * fps)
+        schedule = [(0, 0)]
+        last_switch = 0
+        for i, val in enumerate(rms):
+            frame = round(i * total_frames / len(rms))
+            if frame - last_switch < min_hold_frames:
+                continue
+            if frame >= total_frames:
+                break
+            # Switch at low-energy points (below 40% of max)
+            if val < 0.4:
+                current = schedule[-1][0]
+                candidates = [j for j in range(n_poses) if j != current]
+                schedule.append((rng.choice(candidates), frame))
+                last_switch = frame
+        return schedule
+
+    # Fallback: random 2.0-5.0s holds
     schedule = [(0, 0)]
     frame = 0
     while frame < total_frames:
@@ -206,8 +260,7 @@ def _build_pose_schedule(n_poses: int, total_frames: int, fps: float,
         if frame < total_frames:
             current = schedule[-1][0]
             candidates = [i for i in range(n_poses) if i != current]
-            next_pose = rng.choice(candidates)
-            schedule.append((next_pose, frame))
+            schedule.append((rng.choice(candidates), frame))
     return schedule
 
 
@@ -226,15 +279,14 @@ def _render_sm_segment(
 ) -> bool:
     """Render a stop-motion video segment with multi-character support.
 
+    Phase 1 enhancements:
+    - Speaker: optical flow morph between pose switches (5-frame transition)
+    - Speaker: audio-driven pose switching (at low-RMS pauses)
+    - Listener: subtle breathing (±2px sine, 3.3s period) + occasional blink
+    - Landing transform still applies at each pose hold start
+
     Each entry in char_layers is a dict:
         {"poses": list[str], "is_speaker": bool}
-    - Speaker: randomized pose schedule (0.5-2.0s holds), landing transform
-    - Listener: static listening pose (index 1), no landing transform
-    - 0 layers: background only (scene/object shot)
-
-    Position logic:
-        1 character → center
-        2 characters → speaker left (x=0.35W), listener right (x=0.65W)
 
     Returns True on success, False on failure.
     """
@@ -292,19 +344,52 @@ def _render_sm_segment(
             else:
                 positions.append(1280 * 0.65)
 
-    # Build random pose schedule for each character layer
+    # Build pose schedule for each character layer
     total_frames = max(1, round(duration * DELIVERY_FPS))
     rng = random.Random(seed)
     schedules = []
     for i, layer in enumerate(processed_layers):
+        af = audio_file if layer["is_speaker"] else None
         s = _build_pose_schedule(
             len(layer["poses"]), total_frames, DELIVERY_FPS,
-            seed + i * 100, is_speaker=layer["is_speaker"])
+            seed + i * 100, is_speaker=layer["is_speaker"],
+            audio_file=af)
         schedules.append(s)
 
+    # Pre-generate optical flow morph frames for speaker pose transitions
+    morph_cache: dict[int, list] = {}  # layer_idx -> {transition_idx: [frames]}
+    try:
+        from stop_motion import generate_morph_frames as _gen_morph
+        _HAS_MORPH = True
+    except ImportError:
+        _HAS_MORPH = False
+
+    for li, layer in enumerate(processed_layers):
+        if not layer["is_speaker"] or not _HAS_MORPH:
+            continue
+        poses = layer["poses"]
+        sched = schedules[li]
+        if len(poses) < 2 or len(sched) < 2:
+            continue
+        morph_cache[li] = {}
+        for ti in range(len(sched) - 1):
+            pa_idx = sched[ti][0]
+            pb_idx = sched[ti + 1][0]
+            pa = poses[pa_idx]
+            pb = poses[pb_idx]
+            if pa.size == pb.size:
+                try:
+                    frames = _gen_morph(pa, pb, n_frames=5)
+                    morph_cache[li][ti] = frames
+                except Exception:
+                    pass
+
+    MORPH_DUR = 0.2  # seconds for 5-frame transition
+    MORPH_N = 5
     cy = POSE_CENTER_Y
 
     for fidx in range(total_frames):
+        t = fidx / DELIVERY_FPS
         canvas = bg_img.copy()
 
         for li, layer in enumerate(processed_layers):
@@ -312,29 +397,62 @@ def _render_sm_segment(
             schedule = schedules[li]
             x = positions[li] if li < len(positions) else 1280 * 0.5
 
-            # Find which pose to use at this frame
-            pose_idx = schedule[0][0]
-            local_t = fidx / DELIVERY_FPS
-            for pi, start_frame in reversed(schedule):
+            # Find which pose stage we're in
+            stage_idx = 0
+            for si, (pi, start_frame) in enumerate(schedule):
                 if fidx >= start_frame:
-                    pose_idx = pi
-                    local_t = (fidx - start_frame) / DELIVERY_FPS
+                    stage_idx = si
+                else:
                     break
 
-            pose = poses[pose_idx]
+            pose_idx = schedule[stage_idx][0]
+            stage_start_frame = schedule[stage_idx][1]
+            local_t = (fidx - stage_start_frame) / DELIVERY_FPS
+
+            # Check if we're in a morph transition (near end of current stage)
+            in_morph = False
+            if (li in morph_cache and stage_idx < len(schedule) - 1
+                    and stage_idx in morph_cache[li]):
+                next_start = schedule[stage_idx + 1][1]
+                frames_to_next = next_start - fidx
+                morph_frames_needed = round(MORPH_DUR * DELIVERY_FPS)
+                if frames_to_next <= morph_frames_needed and frames_to_next > 0:
+                    morph_frames = morph_cache[li][stage_idx]
+                    morph_progress = 1.0 - (frames_to_next / morph_frames_needed)
+                    morph_idx = min(MORPH_N - 1, int(morph_progress * MORPH_N))
+                    pose = morph_frames[morph_idx]
+                    in_morph = True
+
+            if not in_morph:
+                pose = poses[pose_idx]
 
             if layer["is_speaker"]:
-                landing = compute_landing(local_t, direction=direction)
-                scale = 1.0 + landing["scale"]
-                px = x + landing["x"]
-                py = cy + landing["y"]
-                rot = landing["rotation"]
+                if in_morph:
+                    # During morph: no landing transform, just show the interpolated frame
+                    scale = 1.0
+                    px = x
+                    py = cy
+                    rot = 0.0
+                else:
+                    landing = compute_landing(local_t, direction=direction)
+                    scale = 1.0 + landing["scale"]
+                    px = x + landing["x"]
+                    py = cy + landing["y"]
+                    rot = landing["rotation"]
             else:
-                # Listener: completely static — no movement at all
-                pose = poses[1] if len(poses) > 1 else poses[0]
+                # Listener: subtle breathing motion (sine wave, ~3.3s period)
+                import math
+                breath_y = 2.0 * math.sin(t * 2 * math.pi / 3.3)
+                # Occasional blink: replace with "surprised" pose briefly every 4-6s
+                blink_cycle = 5.0 + (seed % 100) / 50.0  # 5.0-7.0s period
+                blink_phase = (t % blink_cycle) / blink_cycle
+                if 0.85 < blink_phase < 0.92 and len(poses) > 3:
+                    pose = poses[3]  # "surprised" pose as blink substitute
+                else:
+                    pose = poses[1] if len(poses) > 1 else poses[0]
                 scale = 1.0
                 px = x
-                py = cy
+                py = cy + breath_y
                 rot = 0.0
 
             from stop_motion import transform_pose, paste_with_shadow
