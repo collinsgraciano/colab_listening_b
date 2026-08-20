@@ -391,6 +391,8 @@ def _render_sm_segment(
     cy = POSE_CENTER_Y
 
     for fidx in range(total_frames):
+        if fidx % 10 == 0:
+            print(f"    frame {fidx}/{total_frames}", flush=True)
         t = fidx / render_fps
         canvas = bg_img.copy()
 
