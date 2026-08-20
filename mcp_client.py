@@ -244,7 +244,9 @@ def poll_task(task_id, interval=40, max_wait=600):
                     if url:
                         task_data["url"] = url
                     if "url" not in task_data:
-                        img_urls = data.get("imageUrls") or data.get("image_urls") or []
+                        # seedream returns image_urls (plural) inside result_obj
+                        img_urls = (result_obj.get("image_urls") or
+                                    data.get("imageUrls") or data.get("image_urls") or [])
                         if img_urls and isinstance(img_urls, list) and img_urls[0]:
                             task_data["url"] = img_urls[0]
                     if "url" not in task_data:
