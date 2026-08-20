@@ -692,9 +692,11 @@ def compose_listening(
     return final_path
 
 
-def compose_static(
+def compose_image(
     work_dir: str,
     dialogue_images: list[str],
+    pose_images: list[list[str]],
+    background_img: str,
     timeline: list[dict],
     script: dict,
     narration: dict,
@@ -704,26 +706,34 @@ def compose_static(
     srt_dir: str,
     pad: float = 0.4,
     progress_cb=None,
-    animated: bool = False,
+    animation: str = "landing",
 ) -> str:
-    """Compose final listening practice video using ONLY static images (no video clips).
+    """Compose final listening practice video using images (no video clips).
 
-    When *animated* is True, dialogue segments apply a landing-transform micro-
-    animation (scale decay 1.04x→1.0, ±14px horizontal pan, ±10px sine bounce
-    over 0.3s) inspired by the image-motion-animation stop-motion technique.
-    Other segments (title_card, practice, etc.) remain static.
+    Unified function merging compose_static + compose_stop_motion. The
+    *animation* parameter controls how dialogue segments are rendered:
 
-    All segments use ``-loop 1`` on static images:
-      - title_card: scene_img + title overlay (transparent PNG)
-      - dialogue:   per-line dialogue_images[i] + TTS audio
-      - practice_intro: scene_img + text overlay + narration
-      - listen_en / listen_zh / practice: same Pillow static frames as compose_listening
-      - outro:      scene_img + text overlay + narration
+    - ``"none"``: static image per line, no movement (former ``static`` mode).
+    - ``"landing"``: static image per line with FFmpeg landing-transform
+      micro-animation (scale decay + pan + sine bounce, 0.3s) (former
+      ``static_animated`` mode).
+    - ``"stop_motion"``: multi-pose character animation via PIL frame
+      rendering with optical-flow morphing and landing transforms
+      (former ``stop_motion`` mode). Requires *pose_images* and
+      *background_img*.
+
+    Non-dialogue segments (title_card, practice, outro, etc.) are identical
+    across all animation modes.
 
     Args:
         work_dir: Working directory for temp files and output.
-        dialogue_images: List of per-line dialogue image paths (one per dialogue line).
-        timeline: Timeline segments from build_listening_timeline (with audio_dur added).
+        dialogue_images: Per-line dialogue image paths (used when animation
+            is "none" or "landing").
+        pose_images: Per-line list of pose image paths (used when animation
+            is "stop_motion"). Pass ``[]`` when not used.
+        background_img: Background image for stop_motion compositing
+            (usually same as scene_img).
+        timeline: Timeline segments from build_listening_timeline.
         script: Lesson script dict.
         narration: {"intro": path, "outro": path, "practice_intro": path}.
         normal_paths: English dialogue audio paths.
@@ -732,6 +742,7 @@ def compose_static(
         srt_dir: Directory for SRT file (cwd for FFmpeg subtitle burn).
         pad: Audio pad between segments (seconds).
         progress_cb: callback(percent, message).
+        animation: "none", "landing", or "stop_motion".
 
     Returns:
         Path to final video.
@@ -739,6 +750,8 @@ def compose_static(
     def _cb(pct, msg):
         if progress_cb:
             progress_cb(pct, msg)
+
+    import tempfile
 
     work = Path(work_dir)
     tmp_dir = work / "tmp_segments"
@@ -751,9 +764,49 @@ def compose_static(
     dialogue = script.get("dialogue", [])
     n = len(dialogue)
 
+    is_stop_motion = (animation == "stop_motion")
+
+    # --- Stop-motion: preprocess poses + subtitle overlays ---
+    processed_poses: list[list] = []
+    subtitle_overlays: dict[int, object] = {}
+    frames_dir = None
+    bg_img_rgba = None
+    if is_stop_motion:
+        from stop_motion import remove_bg, normalize_pose, _render_subtitle_overlay
+        from PIL import Image as _PILImage
+
+        frames_dir = Path(tempfile.gettempdir()) / f"sm_frames_{work.name}"
+        frames_dir.mkdir(parents=True, exist_ok=True)
+
+        _cb(2, "Loading background...")
+        bg_img_rgba = _PILImage.open(background_img).convert("RGBA").resize(
+            (TARGET_W, TARGET_H))
+
+        _cb(5, f"Processing {sum(len(p) for p in pose_images)} character poses...")
+        for i, line_poses in enumerate(pose_images):
+            line_processed = []
+            for j, p_path in enumerate(line_poses):
+                if not os.path.exists(p_path):
+                    print(f"  WARNING: pose image {p_path} not found, skipping")
+                    continue
+                raw = _PILImage.open(p_path)
+                alpha = remove_bg(raw)
+                normalized = normalize_pose(alpha)
+                line_processed.append(normalized)
+            if not line_processed:
+                line_processed = [_PILImage.new("RGBA", (TARGET_W, TARGET_H), (0, 0, 0, 0))]
+            processed_poses.append(line_processed)
+        _cb(8, "Pose processing done.")
+
+        # Pre-render subtitle overlays for dialogue segments
+        for i, line in enumerate(dialogue):
+            en = line.get("text", "")
+            zh = line.get("zh", "")
+            subtitle_overlays[i] = _render_subtitle_overlay(en, zh)
+
     # --- Render static frames for Ch3 (same as compose_listening) ---
     if os.path.exists(scene_img):
-        _cb(5, f"Rendering {n} static frames...")
+        _cb(10 if is_stop_motion else 5, f"Rendering {n} static frames...")
         for i, line in enumerate(dialogue):
             p_en = str(static_dir / f"en_{i}.png")
             _render_static_frame(
@@ -763,7 +816,7 @@ def compose_static(
             _render_static_frame(
                 line.get("text", ""), line.get("phonetic", ""),
                 line.get("zh", ""), scene_img, p, i, n)
-        _cb(10, "Static frames done.")
+        _cb(12 if is_stop_motion else 10, "Static frames done.")
 
     # --- Build each segment ---
     segments = []
@@ -913,19 +966,70 @@ def compose_static(
                        out_path]
 
         else:
-            # Dialogue (static image per line): per-line dialogue image + TTS audio
-            # dialogue_img_{i} comes at frontier's NATIVE resolution — must be
-            # normalized to the target canvas or subtitles overhang the frame
+            # Dialogue segment — branch on animation mode
+            if is_stop_motion and d_idx >= 0 and d_idx < len(processed_poses):
+                # --- Stop-motion: PIL frame rendering + optical flow ---
+                from stop_motion import _render_dialogue_segment as _render_sm
+                line_poses = processed_poses[d_idx]
+                sub_overlay = subtitle_overlays.get(d_idx)
+                out_frames_dir = frames_dir / f"dialogue_{d_idx}"
+                out_frames_dir.mkdir(parents=True, exist_ok=True)
+
+                _render_sm(bg_img_rgba, line_poses, sub_overlay,
+                           duration, audio_dur, 24, out_frames_dir, d_idx)
+
+                frame_pattern = str(out_frames_dir / "frame-%04d.png")
+                if audio_file and os.path.exists(audio_file):
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-framerate", "24", "-i", frame_pattern,
+                        "-i", audio_file,
+                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                        "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
+                        out_path,
+                    ]
+                else:
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-framerate", "24", "-i", frame_pattern,
+                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                        "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", "24",
+                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                        out_path,
+                    ]
+                # Run now (don't defer to common try/continue below)
+                try:
+                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                    if r.returncode != 0:
+                        print(f"  FFmpeg error (stop_motion dialogue {d_idx}): {r.stderr[-200:]}")
+                except subprocess.TimeoutExpired:
+                    print(f"  FFmpeg timeout on stop_motion dialogue {d_idx}")
+                except Exception as e:
+                    print(f"  Error on stop_motion dialogue {d_idx}: {e}")
+                # Cleanup frames to save disk
+                shutil.rmtree(out_frames_dir, ignore_errors=True)
+
+                # Skip the common FFmpeg try/except below
+                if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+                    segments.append(out_path)
+                    _cb(int(seg_idx / total_segs * 80),
+                        f"  Segment {seg_idx}/{total_segs} (dialogue {d_idx})")
+                continue
+
+            # --- None / Landing: static image per line via FFmpeg ---
             idx = min(audio_idx, len(dialogue_images) - 1) if dialogue_images else 0
             d_img = dialogue_images[idx] if dialogue_images and idx < len(dialogue_images) else scene_img
             if not os.path.exists(d_img):
                 d_img = scene_img
 
-            # Build VF: landing-transform micro-animation when animated=True,
+            # Build VF: landing-transform micro-animation when animation=="landing",
             # else plain VF_NORM.  Landing transform: scale 1.04x → crop to
             # 1280x720 with time-varying pan (±14px x, ±10px sine y, 0.3s decay,
             # alternating direction per line) — gives stop-motion "settle" feel.
-            if animated:
+            if animation == "landing":
                 _dir = 1 if (idx % 2 == 0) else -1
                 _ld = 0.3  # landing duration (seconds)
                 _up_w = int(TARGET_W * 1.04)
@@ -993,11 +1097,13 @@ def compose_static(
 
     # Cleanup
     shutil.rmtree(tmp_dir, ignore_errors=True)
+    if frames_dir is not None:
+        shutil.rmtree(frames_dir, ignore_errors=True)
 
     # Final loudnorm pass
     _cb(95, "Final loudnorm pass (normalize volume)...")
     apply_final_loudnorm(final_path, str(vid_dir))
     size_mb = os.path.getsize(final_path) / (1024 * 1024)
-    _cb(100, f"Static listening video done: {final_path} ({size_mb:.1f}MB)")
+    _cb(100, f"Image listening video done: {final_path} ({size_mb:.1f}MB)")
 
     return final_path

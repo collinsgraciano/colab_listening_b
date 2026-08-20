@@ -9,7 +9,7 @@ Steps (each an independently resumable function):
   step1  MCP init (multi-token rotation)
   step2  Concurrent: image generation + TTS audio; clip_0 launched in parallel
   step3  Group consecutive dialogue lines, one Seedance2 clip per group
-         (skipped entirely in --structure static mode)
+         (skipped entirely in --structure image/quest mode)
   step4  Timeline + SRT building
   step4.5 YouTube metadata + thumbnail
   step5  Final video composition (FFmpeg + Pillow)
@@ -174,11 +174,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--openai-api-key", default=None, help="OpenAI-compatible API key (or set OPENAI_API_KEY env var)")
     parser.add_argument("--openai-model", default=None, help="OpenAI-compatible model name (default: grok-4.6). Available: grok-4.6, grok-4.5, gemini-3.1-pro-preview, gemini-3.7-flash, claude-sonnet-5, gemini-2.5-pro-1m")
     parser.add_argument("--llm-retries", type=int, default=10, help="Max retries per LLM round (default 10). Set higher for unreliable endpoints.")
-    parser.add_argument("--structure", default="original", choices=["original", "static", "static_animated", "stop_motion", "quest"],
-                        help="Video structure: 'original' (4-chapter, video clips), 'static' (all images), 'static_animated' (static + landing transform), 'stop_motion' (multi-pose + optical flow), or 'quest' (task-hook listening)")
+    parser.add_argument("--structure", default="original", choices=["original", "image", "quest"],
+                        help="Video structure: 'original' (4-chapter, video clips), 'image' (all images, animation controlled by --animation), or 'quest' (task-hook listening)")
+    parser.add_argument("--animation", default="landing", choices=["none", "landing", "stop_motion"],
+                        help="Dialogue animation for --structure image: 'none' (static), 'landing' (landing transform), 'stop_motion' (multi-pose + optical flow). Default: landing")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
     parser.add_argument("--no-4k", dest="no_4k", action="store_true", help="Skip the final 4K upscaling step")
-    parser.add_argument("--tts-rate", default=None, help="Override dialogue English TTS rate (e.g. '-15%', '0%'). Default: mode-dependent (quest '0%%', others '-15%%')")
+    parser.add_argument("--tts-rate", default=None, help="Override dialogue English TTS rate (e.g. '-15%%', '0%%'). Default: mode-dependent (quest '0%%', others '-15%%')")
     parser.add_argument("--upscale-timeout", type=int, default=3600, help="Timeout in seconds for 4K upscale (default 3600)")
     return parser.parse_args()
 
@@ -240,8 +242,26 @@ def _step0_script(args, checkpoint: dict, topic: str, parent_dir: Path,
     dirs = _dirs(work_dir)
     script_path = work_dir / "script.json"
     cp_structure = checkpoint.get("structure")
+    cp_animation = checkpoint.get("animation", "")
+    # Backward compat: map old structure names to new "image" + animation
+    _OLD_STRUCTURE_MAP = {
+        "static": ("image", "none"),
+        "static_animated": ("image", "landing"),
+        "stop_motion": ("image", "stop_motion"),
+    }
+    if cp_structure in _OLD_STRUCTURE_MAP:
+        old_struct = cp_structure
+        cp_structure, cp_animation = _OLD_STRUCTURE_MAP[old_struct]
+        print(f"  [Resume] Migrating old structure '{old_struct}' → image/{cp_animation}")
+        checkpoint["structure"] = cp_structure
+        checkpoint["animation"] = cp_animation
+    if not cp_animation:
+        cp_animation = args.animation
+    structure_match = (cp_structure == args.structure)
+    if args.structure == "image":
+        structure_match = structure_match and (cp_animation == args.animation)
     if (_step_done(checkpoint, "step0_script") and script_path.exists()
-            and cp_structure == args.structure):
+            and structure_match):
         print("  [Resume] Loading existing script...")
         script = json.loads(script_path.read_text(encoding="utf-8"))
         mark_topic_used(used_topics_file, topic)
@@ -258,7 +278,7 @@ def _step0_script(args, checkpoint: dict, topic: str, parent_dir: Path,
         for d in dirs.values():
             d.mkdir(parents=True, exist_ok=True)
         script_path.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
-        _save_checkpoint(work_dir, "step0_script", topic=topic, cefr=args.cefr, structure=args.structure)
+        _save_checkpoint(work_dir, "step0_script", topic=topic, cefr=args.cefr, structure=args.structure, animation=args.animation)
         mark_topic_used(used_topics_file, topic)
     print(f"  Script saved: {script_path}")
     print(f"  Title: {script.get('title', '')}")
@@ -286,8 +306,8 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
 
     dialogue = script.get("dialogue", [])
     n = len(dialogue)
-    is_static = (args.structure in ("static", "static_animated"))
-    is_stop_motion = (args.structure == "stop_motion")
+    is_image = (args.structure == "image")
+    is_stop_motion = (is_image and args.animation == "stop_motion")
     is_quest = (args.structure == "quest")
     img_dir, audio_dir, clips_dir = dirs["images"], dirs["audio"], dirs["clips"]
 
@@ -319,7 +339,8 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
             image_prompts.append((si_prompt, f"scene_{si}.png"))
 
     # --- Resume check ---
-    resume_result = _check_step2_resume(checkpoint, script, dirs, n, is_quest)
+    resume_result = _check_step2_resume(checkpoint, script, dirs, n, is_quest,
+                                          is_stop_motion=is_stop_motion)
     tts_thread = None
     if resume_result is not None:
         tts_results, image_urls = resume_result
@@ -341,7 +362,7 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
 
         image_urls = _generate_images(image_prompts, img_dir, tts_thread)
 
-        if is_static or is_quest:
+        if is_image or is_quest:
             char_scene_cdn = image_urls.get("char_scene.png", "")
             if is_quest:
                 # Quest uses per-character atlas (4 chars × 8 poses)
@@ -366,9 +387,9 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
     scene_clip_task = None
     scene_clip_thread = None
 
-    if is_static or is_quest:
+    if is_image or is_quest:
         clip_paths = []
-        print(f"  [{'Static' if is_static else 'Quest'}] Skipping clip_0 generation (no video clips)")
+        print(f"  [{'Image' if is_image else 'Quest'}] Skipping clip_0 generation (no video clips)")
     else:
         scene_clip_task = _build_scene_clip_task(scene, scene_url)
         clip0_path = str(clips_dir / "clip_0.mp4")
@@ -414,7 +435,7 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
 
 def _step3_clips(args, checkpoint: dict, work_dir: Path, dirs: dict, script: dict,
                  ctx: dict) -> tuple[list[str], list[dict], dict]:
-    """Step 3: generate group video clips (skipped entirely in static/quest mode)."""
+    """Step 3: generate group video clips (skipped entirely in image/quest mode)."""
     print("\n" + "=" * 60)
     dialogue = script.get("dialogue", [])
     tts_results = ctx["tts_results"]
@@ -423,7 +444,7 @@ def _step3_clips(args, checkpoint: dict, work_dir: Path, dirs: dict, script: dic
     dialogue_durations = tts_results.get("dialogue_durations", [])
     audio_dir, clips_dir = dirs["audio"], dirs["clips"]
 
-    if args.structure in ("static", "static_animated", "stop_motion", "quest"):
+    if args.structure in ("image", "quest"):
         print(f"Step 3: Skipped ({args.structure} mode — no video generation)")
         _save_checkpoint(work_dir, "step3_video")
         print(f"  TTS: {len(normal_paths)} EN + {sum(1 for p in zh_paths if p)} ZH")
@@ -635,39 +656,24 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             pad=args.pad,
             progress_cb=progress_cb,
         )
-    elif args.structure in ("static", "static_animated"):
-        from video_compose import compose_static
+    elif args.structure == "image":
+        from video_compose import compose_image
         n = len(script.get("dialogue", []))
-        dialogue_images = [str(dirs["images"] / f"dialogue_img_{i}.png") for i in range(n)]
-        final_path = compose_static(
+        if args.animation == "stop_motion":
+            pose_images = []
+            for i in range(n):
+                line_poses = [str(dirs["images"] / f"pose_{i}_{j}.png") for j in range(4)
+                              if os.path.exists(str(dirs["images"] / f"pose_{i}_{j}.png"))]
+                if not line_poses:
+                    line_poses = [scene_img]
+                pose_images.append(line_poses)
+            dialogue_images = []
+        else:
+            dialogue_images = [str(dirs["images"] / f"dialogue_img_{i}.png") for i in range(n)]
+            pose_images = []
+        final_path = compose_image(
             work_dir=str(work_dir),
             dialogue_images=dialogue_images,
-            timeline=timeline,
-            script=script,
-            narration=narration,
-            normal_paths=normal_paths,
-            zh_paths=zh_paths,
-            scene_img=scene_img,
-            srt_dir=str(sub_dir),
-            pad=args.pad,
-            progress_cb=progress_cb,
-            animated=(args.structure == "static_animated"),
-        )
-    elif args.structure == "stop_motion":
-        from stop_motion import compose_stop_motion
-        n = len(script.get("dialogue", []))
-        pose_images = []
-        for i in range(n):
-            line_poses = []
-            for j in range(4):
-                p = str(dirs["images"] / f"pose_{i}_{j}.png")
-                if os.path.exists(p):
-                    line_poses.append(p)
-            if not line_poses:
-                line_poses = [scene_img]
-            pose_images.append(line_poses)
-        final_path = compose_stop_motion(
-            work_dir=str(work_dir),
             pose_images=pose_images,
             background_img=scene_img,
             timeline=timeline,
@@ -679,6 +685,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             srt_dir=str(sub_dir),
             pad=args.pad,
             progress_cb=progress_cb,
+            animation=args.animation,
         )
     else:
         final_path = compose_listening(
@@ -790,8 +797,20 @@ def main():
         checkpoint = _load_checkpoint(parent_dir)
         if checkpoint:
             cp_struct = checkpoint.get("structure")
-            if cp_struct and cp_struct != args.structure:
-                print(f"  [Resume] Structure changed ({cp_struct} → {args.structure}), starting fresh.")
+            # Backward compat: map old structure names to new "image" + animation
+            _OLD_MAP = {"static": ("image", "none"), "static_animated": ("image", "landing"), "stop_motion": ("image", "stop_motion")}
+            if cp_struct in _OLD_MAP:
+                old = cp_struct
+                cp_struct, cp_anim = _OLD_MAP[old]
+                checkpoint["structure"] = cp_struct
+                checkpoint["animation"] = cp_anim
+                print(f"  [Resume] Migrating old structure '{old}' → image/{cp_anim}")
+            cp_anim = checkpoint.get("animation", args.animation)
+            struct_changed = (cp_struct != args.structure)
+            if args.structure == "image":
+                struct_changed = struct_changed or (cp_anim != args.animation)
+            if cp_struct and struct_changed:
+                print(f"  [Resume] Structure changed ({cp_struct}/{cp_anim} → {args.structure}/{args.animation}), starting fresh.")
                 checkpoint = {}
             else:
                 print(f"  [Resume] Found checkpoint: {checkpoint.get('completed_steps', [])}")

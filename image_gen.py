@@ -10,7 +10,7 @@ from checkpoint import step_done
 from media_utils import get_duration as _get_audio_duration
 
 
-def check_step2_resume(checkpoint, script, dirs, n, is_quest):
+def check_step2_resume(checkpoint, script, dirs, n, is_quest, is_stop_motion=False):
     """Check if Step 2 can be resumed from existing files. Returns (tts_results, image_urls) or None."""
     img_dir, audio_dir = dirs["images"], dirs["audio"]
     step2_done = step_done(checkpoint, "step2_images_tts")
@@ -24,12 +24,23 @@ def check_step2_resume(checkpoint, script, dirs, n, is_quest):
     narration_files = (["welcome.mp3", "hook.mp3", "outro.mp3"] if is_quest
                        else ["intro.mp3", "outro.mp3", "practice_intro.mp3"])
     narration_exist = all((audio_dir / f).exists() for f in narration_files)
-    all_dialogue_imgs_exist = (not (checkpoint.get("structure") in ("static", "quest"))) or all(
+    # For image mode: need dialogue images unless stop_motion (which needs pose images)
+    struct_val = checkpoint.get("structure", "")
+    needs_dialogue_imgs = (struct_val not in ("image", "quest")) or (
+        struct_val == "image" and not is_stop_motion)
+    all_dialogue_imgs_exist = (not needs_dialogue_imgs) or all(
         (img_dir / f"dialogue_img_{i}.png").exists() for i in range(n))
+    # For stop_motion: need pose images
+    if is_stop_motion:
+        all_pose_imgs_exist = all(
+            os.path.exists(str(img_dir / f"pose_{i}_{j}.png"))
+            for i in range(n) for j in range(4))
+    else:
+        all_pose_imgs_exist = True
 
     if not (step2_done and char_scene_file.exists() and scene_file.exists()
             and all_audio_exist and all_zh_exist
-            and narration_exist and all_dialogue_imgs_exist):
+            and narration_exist and all_dialogue_imgs_exist and all_pose_imgs_exist):
         return None
 
     print("  [Resume] Step 2 already done, loading existing images + audio...")
@@ -123,7 +134,7 @@ def generate_dialogue_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
     """Generate per-line dialogue images for static/quest modes (5 concurrent)."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
     n = len(dialogue)
-    mode_label = "quest" if is_quest else "static"
+    mode_label = "quest" if is_quest else "image"
     print(f"  [Image] Generating {n} dialogue line images ({mode_label} mode, 5 concurrent)...")
 
     def _gen_one(i, line):
