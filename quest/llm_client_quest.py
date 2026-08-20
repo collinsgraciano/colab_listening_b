@@ -164,21 +164,15 @@ def generate_quest_script(topic: str, cefr: str = "A1",
         except RuntimeError as e:
             print(f"  [LLM] Round 4 batch {batch_start} failed ({e}), skipping")
 
-    # Merge enhanced fields into dialogue
+    # Merge enhanced fields into dialogue (only on_screen — used by video_compose_quest)
     enh_by_idx = {abs_idx: enh for abs_idx, enh in all_enhanced}
     for i, line in enumerate(all_dialogue):
         enh = enh_by_idx.get(i)
         if not enh:
             continue
-        phonetic = enh.get("phonetic", "").strip()
-        if phonetic:
-            line["phonetic"] = phonetic
         on_screen = enh.get("on_screen")
         if on_screen is not None:
             line["on_screen"] = on_screen
-        img = enh.get("image_prompt", "").strip()
-        if img:
-            line["image_prompt"] = img
 
     # ── Fallback: fill any still-empty zh via a small targeted call ─────
     empty_zh = [(i, d.get("text", "")) for i, d in enumerate(all_dialogue)
@@ -188,15 +182,6 @@ def generate_quest_script(topic: str, cefr: str = "A1",
         zh_map = _batch_translate_zh(empty_zh)
         for i, zh in zh_map.items():
             all_dialogue[i]["zh"] = zh
-
-    # ── Fallback: fill any still-empty phonetic via a small targeted call ─
-    empty_phonetic = [(i, d.get("text", "")) for i, d in enumerate(all_dialogue)
-                      if not d.get("phonetic", "").strip()]
-    if empty_phonetic:
-        print(f"  [LLM] {len(empty_phonetic)} lines have empty phonetic, generating fallback...")
-        phon_map = _batch_phonetic(empty_phonetic)
-        for i, phon in phon_map.items():
-            all_dialogue[i]["phonetic"] = phon
 
     # ── Assemble final script ──────────────────────────────────────────
     script = {
@@ -265,43 +250,6 @@ def generate_quest_script(topic: str, cefr: str = "A1",
 # ---------------------------------------------------------------------------
 # Helper: chat + extract JSON with retry
 # ---------------------------------------------------------------------------
-
-def _batch_phonetic(lines: list[tuple[int, str]]) -> dict[int, str]:
-    """Generate IPA phonetic transcription for dialogue lines in one batch call."""
-    if not lines:
-        return {}
-    import json as _json
-    items = [{"i": i, "text": text} for i, text in lines]
-    prompt = f"""Write IPA phonetic transcription for each English sentence.
-Use proper IPA symbols in /slashes/.
-Return a JSON array, same length and order, each item with "i" and "phonetic":
-{_json.dumps(items, ensure_ascii=False)}
-
-Output: [{{"i": 0, "phonetic": "/.../"}}]
-JSON array ONLY."""
-
-    try:
-        result = _chat_and_parse(
-            prompt, temperature=0.3, max_tokens=4096, reasoning_effort="low",
-            label="fallback_phonetic")
-    except RuntimeError as e:
-        print(f"  [LLM] Fallback phonetic failed: {e}")
-        return {}
-
-    phon_map = {}
-    if isinstance(result, list):
-        for item in result:
-            if isinstance(item, dict):
-                idx = item.get("i", -1)
-                phon = item.get("phonetic", "").strip()
-                if idx >= 0 and phon:
-                    phon_map[idx] = phon
-
-    for i, _ in lines:
-        if i not in phon_map:
-            phon_map[i] = "/"  # minimal placeholder to pass validation
-    return phon_map
-
 
 def _batch_translate_zh(lines: list[tuple[int, str]]) -> dict[int, str]:
     """Translate English dialogue lines to Traditional Chinese in one batch call.
@@ -573,7 +521,7 @@ def _build_enhance_prompt_from_reindexed(batch_lines: list[dict], outline: dict)
     char_b = outline.get("char_b_description", "")
     char_c = outline.get("char_c_description", "")
     scene = outline.get("scene", "")
-    return f"""Add IPA phonetic, on_screen direction, and image_prompt to each dialogue line.
+    return f"""For each dialogue line, decide which characters are visible on screen.
 
 Characters: char_a={char_a} / char_b={char_b} / char_c={char_c}
 Scene: {scene}
@@ -581,14 +529,13 @@ Scene: {scene}
 Lines:
 {lines_json}
 
-For each line add:
-- "phonetic": IPA in /slashes/
-- "on_screen": visible chars, e.g. ["char_a","char_b"] or [] for scene shot (2-4 total)
-  - buildup/review: mostly ["char_a","char_b"]; core: mix with ["char_c"]
-- "image_prompt": brief scene description (3D cartoon, 16:9), include the speaker's appearance + action
+Rules for "on_screen":
+- buildup/review: mostly ["char_a","char_b"]
+- core: mix of ["char_a","char_c"], ["char_b","char_c"], ["char_a","char_b"]
+- Use [] (empty) for 2-4 lines total (environment/menu/object shots)
 
 Output: JSON array, same length and order:
-[{{"i":0,"phonetic":"/.../","on_screen":["char_a","char_b"],"image_prompt":"..."}}]
+[{{"i":0,"on_screen":["char_a","char_b"]}}]
 JSON array ONLY."""
 
 

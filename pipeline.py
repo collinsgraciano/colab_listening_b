@@ -85,7 +85,7 @@ def _validate_script(script: dict, num_lines: int,
             return False, f"Dialogue line {i} has empty 'text'"
         if not line.get("zh", "").strip():
             return False, f"Dialogue line {i} has empty 'zh'"
-        if not line.get("phonetic", "").strip():
+        if not quest and not line.get("phonetic", "").strip():
             return False, f"Dialogue line {i} has empty 'phonetic'"
         if not line.get("speaker", ""):
             return False, f"Dialogue line {i} has empty 'speaker'"

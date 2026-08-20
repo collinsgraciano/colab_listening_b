@@ -16,6 +16,7 @@ import os
 import sys
 import subprocess
 import shutil
+import tempfile
 import random
 from pathlib import Path
 
@@ -583,8 +584,10 @@ def compose_quest(
             # Host stop-motion on TV studio background
             h_poses = host_poses or [scene_img]
             char_layers = [{"poses": h_poses, "is_speaker": True}]
-            frames_dir = work / "sm_frames" / f"{seg_type}_{seg_idx}"
-            cache_dir = work / "sm_frames"
+            _sm_root = Path(tempfile.gettempdir()) / f"sm_frames_{work.name}"
+            _sm_root.mkdir(parents=True, exist_ok=True)
+            frames_dir = _sm_root / f"{seg_type}_{seg_idx}"
+            cache_dir = _sm_root
             direction = 1 if seg_idx % 2 == 0 else -1
             success = _render_sm_segment(
                 char_layers, host_bg_path, audio_file, out_path, duration,
@@ -627,8 +630,10 @@ def compose_quest(
                 line_poses = pose_images[idx] if pose_images and idx < len(pose_images) else [line_bg]
                 char_layers = [{"poses": line_poses, "is_speaker": True}]
 
-            frames_dir = work / "sm_frames" / f"dialogue_{audio_idx}"
-            cache_dir = work / "sm_frames"
+            _sm_root = Path(tempfile.gettempdir()) / f"sm_frames_{work.name}"
+            _sm_root.mkdir(parents=True, exist_ok=True)
+            frames_dir = _sm_root / f"dialogue_{audio_idx}"
+            cache_dir = _sm_root
             direction = 1 if audio_idx % 2 == 0 else -1
             success = _render_sm_segment(
                 char_layers, line_bg, audio_file, out_path, duration,

@@ -22,6 +22,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -379,7 +380,7 @@ def compose_stop_motion(
 
     work = Path(work_dir)
     tmp_dir = work / "tmp_segments"
-    frames_dir = work / "sm_frames"
+    frames_dir = Path(tempfile.gettempdir()) / f"sm_frames_{work.name}"
     vid_dir = work / "videos"
     static_dir = work / "static_frames"
     tmp_dir.mkdir(parents=True, exist_ok=True)
