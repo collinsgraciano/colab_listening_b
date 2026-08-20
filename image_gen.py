@@ -22,7 +22,7 @@ def check_step2_resume(checkpoint, script, dirs, n, is_quest):
         all_zh_exist = True
     else:
         all_zh_exist = all((audio_dir / f"zh_{i}.mp3").exists() for i in range(n))
-    narration_files = (["hook.mp3", "outro.mp3"] if is_quest
+    narration_files = (["welcome.mp3", "hook.mp3", "outro.mp3"] if is_quest
                        else ["intro.mp3", "outro.mp3", "practice_intro.mp3"])
     narration_exist = all((audio_dir / f).exists() for f in narration_files)
     all_dialogue_imgs_exist = (not (checkpoint.get("structure") in ("static", "quest"))) or all(
@@ -63,7 +63,7 @@ def check_step2_resume(checkpoint, script, dirs, n, is_quest):
         zh_paths = [str(audio_dir / f"zh_{i}.mp3") for i in range(n)]
     dialogue_durations = [_get_audio_duration(p) for p in normal_paths]
     narration = {}
-    for name in (["hook", "outro"] if is_quest
+    for name in (["welcome", "hook", "outro"] if is_quest
                  else ["intro", "outro", "practice_intro"]):
         narration[name] = str(audio_dir / f"{name}.mp3")
     tts_results = {
@@ -407,6 +407,9 @@ def generate_quest_atlases(script, img_dir, tts_thread):
             data = poll_task(task_id, interval=10, max_wait=600)
             url = data.get("url", "")
             if not url:
+                # Debug: print raw response to diagnose URL parsing failure
+                raw = data.get("raw_json", data.get("raw_text", ""))
+                print(f"    [QuestAtlas] DEBUG {char_key} raw response: {str(raw)[:500]}")
                 print(f"    [QuestAtlas] WARNING: No URL for {char_key}")
                 continue
             download_file(url, atlas_path)
