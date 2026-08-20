@@ -35,18 +35,27 @@ def _enforce_rate_limit():
 
 def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
           max_tokens: int = 8192, reasoning_effort: str = "low") -> str:
-    """Call SenseNova LLM chat completion, return content string.
+    """Call LLM chat completion (SenseNova or OpenAI-compatible), return content string.
+
+    Dispatches based on LLM_PROVIDER env var:
+    - "sensenova" (default): SenseNova DeepSeek V4 Flash / glm-5.2
+    - "openai": any OpenAI-compatible endpoint (x666.me, etc.)
 
     Retries on HTTP 429 (rate limit) with exponential backoff.
     Enforces a minimum interval between calls to avoid triggering rate limits.
-    reasoning_effort: "low" (fast, less thinking) or "medium" (more reasoning).
     """
     import time as _time
 
-    # Read model at call time (not module import time) so --model flag works
-    model = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
-    api_key = os.environ.get("SENSENOVA_API_KEY", "")
-    base_url = os.environ.get("SENSENOVA_BASE", "https://token.sensenova.cn/v1")
+    provider = os.environ.get("LLM_PROVIDER", "sensenova")
+
+    if provider == "openai":
+        model = os.environ.get("OPENAI_MODEL", "grok-4.6")
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        base_url = os.environ.get("OPENAI_BASE_URL", "https://x666.me/v1")
+    else:
+        model = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
+        api_key = os.environ.get("SENSENOVA_API_KEY", "")
+        base_url = os.environ.get("SENSENOVA_BASE", "https://token.sensenova.cn/v1")
 
     # 429 rate-limit retry: shorter backoffs for first 2, then escalate
     _429_BACKOFFS = [15, 30, 60, 90, 120]
@@ -58,8 +67,10 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
             "messages": messages,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            "reasoning_effort": reasoning_effort,
         }
+        # reasoning_effort is SenseNova-specific; OpenAI-compatible APIs don't support it
+        if provider != "openai":
+            body["reasoning_effort"] = reasoning_effort
         data = json.dumps(body).encode("utf-8")
         req = urllib.request.Request(
             f"{base_url}/chat/completions",

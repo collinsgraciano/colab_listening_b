@@ -166,8 +166,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mcp-tokens", default=None, help="TJGenerators MCP OAuth tokens, comma-separated for multi-token rotation")
     parser.add_argument("--mcp-token", default=None, help="(Deprecated) Single MCP token. Use --mcp-tokens instead.")
     parser.add_argument("--api-key", default=None, help="SenseNova API key (or set SENSENOVA_API_KEY env var)")
-    parser.add_argument("--model", default=None, choices=["deepseek-v4-flash", "glm-5.2"],
-                        help="SenseNova LLM model: 'deepseek-v4-flash' (default) or 'glm-5.2'")
+    parser.add_argument("--model", default=None,
+                        help="LLM model name. SenseNova: 'deepseek-v4-flash' (default) or 'glm-5.2'. OpenAI-compatible: 'grok-4.6' (default), 'gemini-3.1-pro-preview', 'claude-sonnet-5', etc.")
+    parser.add_argument("--llm-provider", default="sensenova", choices=["sensenova", "openai"],
+                        help="LLM provider: 'sensenova' (default) or 'openai' (OpenAI-compatible endpoint)")
+    parser.add_argument("--openai-base-url", default=None, help="OpenAI-compatible API base URL (default: https://x666.me/v1)")
+    parser.add_argument("--openai-api-key", default=None, help="OpenAI-compatible API key (or set OPENAI_API_KEY env var)")
+    parser.add_argument("--openai-model", default=None, help="OpenAI-compatible model name (default: grok-4.6). Available: grok-4.6, grok-4.5, gemini-3.1-pro-preview, gemini-3.7-flash, claude-sonnet-5, gemini-2.5-pro-1m")
     parser.add_argument("--structure", default="original", choices=["original", "static", "static_animated", "stop_motion", "quest"],
                         help="Video structure: 'original' (4-chapter, video clips), 'static' (all images), 'static_animated' (static + landing transform), 'stop_motion' (multi-pose + optical flow), or 'quest' (task-hook listening)")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
@@ -212,8 +217,13 @@ def _step0_script(args, checkpoint: dict, topic: str, parent_dir: Path,
                   used_topics_file: str) -> tuple[dict, Path, dict]:
     """Step 0: generate (or resume) the script and create the run directory."""
     print("=" * 60)
-    _llm_model = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
-    print(f"Step 0: Generating script via LLM (SenseNova {_llm_model})...")
+    _llm_provider = os.environ.get("LLM_PROVIDER", "sensenova")
+    if _llm_provider == "openai":
+        _llm_model = os.environ.get("OPENAI_MODEL", "grok-4.6")
+        print(f"Step 0: Generating script via LLM (OpenAI-compatible: {_llm_model})...")
+    else:
+        _llm_model = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
+        print(f"Step 0: Generating script via LLM (SenseNova {_llm_model})...")
 
     work_dir = _resolve_run_dir(parent_dir, checkpoint)
 
@@ -746,13 +756,30 @@ def main():
     if args.pad is None:
         args.pad = 0.4
 
-    if args.api_key:
-        os.environ["SENSENOVA_API_KEY"] = args.api_key
-    if args.model:
-        os.environ["SENSENOVA_MODEL"] = args.model
-    if not os.environ.get("SENSENOVA_API_KEY"):
-        print("ERROR: SENSENOVA_API_KEY not set. Pass --api-key or set env var.")
-        sys.exit(1)
+    if args.llm_provider == "openai":
+        os.environ["LLM_PROVIDER"] = "openai"
+        if args.openai_base_url:
+            os.environ["OPENAI_BASE_URL"] = args.openai_base_url
+        if args.openai_api_key:
+            os.environ["OPENAI_API_KEY"] = args.openai_api_key
+        if args.openai_model:
+            os.environ["OPENAI_MODEL"] = args.openai_model
+        elif args.model:
+            os.environ["OPENAI_MODEL"] = args.model
+        os.environ.setdefault("OPENAI_BASE_URL", "https://x666.me/v1")
+        os.environ.setdefault("OPENAI_MODEL", "grok-4.6")
+        if not os.environ.get("OPENAI_API_KEY"):
+            print("ERROR: OPENAI_API_KEY not set. Pass --openai-api-key or set env var.")
+            sys.exit(1)
+    else:
+        os.environ["LLM_PROVIDER"] = "sensenova"
+        if args.api_key:
+            os.environ["SENSENOVA_API_KEY"] = args.api_key
+        if args.model:
+            os.environ["SENSENOVA_MODEL"] = args.model
+        if not os.environ.get("SENSENOVA_API_KEY"):
+            print("ERROR: SENSENOVA_API_KEY not set. Pass --api-key or set env var.")
+            sys.exit(1)
 
     parent_dir = Path(args.output).resolve()
     parent_dir.mkdir(parents=True, exist_ok=True)
