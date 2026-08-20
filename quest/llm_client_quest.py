@@ -64,158 +64,6 @@ def split_phase_lines(num_lines: int) -> tuple[int, int, int, int]:
     return tuple(n)
 
 
-def _build_quest_prompt(topic: str, cefr: str, used_dialogues: list[str] = None,
-                        num_lines: int = 48,
-                        n_buildup: int = 5, n_core: int = 26,
-                        n_reveal: int = 7, n_review: int = 10) -> str:
-    """Build prompt for the quest (task-hook slow listening) lesson.
-
-    4-phase structure: buildup → core → reveal → review.
-    Mirrors the bubble-tea reference video's narrative skeleton.
-    """
-    used_hint = ""
-    if used_dialogues:
-        used_hint = f"""
-IMPORTANT — AVOID DUPLICATES: The following dialogue scenarios have already been generated.
-Do NOT create dialogue that is too similar to these. Use a DIFFERENT situation, different speakers, different story:
-{chr(10).join(f"  - {d}" for d in used_dialogues[:20])}
-"""
-    return f"""You are an expert ESL video director creating a SLOW LISTENING video for BEGINNER learners (overseas Chinese).
-
-CORE MISSION: 幫助海外华人用最地道最日常的英语，搞定真实生活中的每一个场景。
-
-Topic: {topic}
-CEFR Level: {cefr}
-Output: a JSON object ONLY (no markdown, no explanation).
-
-THIS STRUCTURE WORKS FOR ANY SCENARIO — the topic can be airport check-in, hotel check-in, a job interview, grocery shopping, a pharmacy visit, opening a bank account, etc. Keep the same narrative skeleton regardless of the topic:
-- BUILDUP: the two main characters feel a need and discuss options (e.g. tired -> want coffee; travelling -> need to check in; job hunting -> prepare for an interview). The LISTENING QUESTION arises NATURALLY during this conversation — one character asks a curious question, the other defers ("I'll tell you later", "you'll see").
-- CORE: the characters arrive at the destination. This is the longest phase and includes BOTH friend-to-friend education AND transactions with the staff member (barista, gate agent, receptionist, interviewer, cashier...). The staff member explains options, the characters make choices, and the key transaction happens.
-- REVEAL: after the characters try / experience the thing, one friend EXPLAINS THE ANSWER to the listening question. The other friend is surprised — they had a different guess. The true answer is revealed here, INSIDE the dialogue.
-- REVIEW: the two main characters reunite and evaluate the experience. They explicitly CONFIRM the answer to the listening question (one asks again, the other answers correctly). They reuse the target vocabulary with positive, relaxed emotions, and mention coming back again.
-
-{used_hint}
-CONTENT REQUIREMENTS — SLOW LISTENING FOR ABSOLUTE BEGINNERS:
-- Vocabulary MUST stay at {cefr} level (A1-A2 core words). Every sentence is AT MOST 10 WORDS.
-- Pick 5-8 TARGET WORDS for the topic (nouns like "latte", "boarding pass", adjectives like "hot", "fresh", "expensive"). Each target word MUST appear naturally at least 3 times across the dialogue, in different sentences.
-- Use simple high-frequency patterns that repeat naturally: "I want...", "Do you like...", "Can I have...", "Would you like...", "How much is it?".
-- The conversation must feel warm, friendly, realistic — small daily life, not a textbook. Short lines, natural back-channeling ("Really?", "Sounds good!").
-- The dialogue must tell a COMPLETE mini story: the need (buildup) -> the transaction (core) -> the answer (reveal) -> the happy reflection (review).
-
-TECHNICAL REQUIREMENTS:
-- THREE characters:
-  - char_a and char_b: the two main characters (friends / colleagues / family). They talk in the buildup, reveal, and review phases. char_b ALSO appears in the core phase for friend-to-friend education scenes.
-  - char_c: the staff member at the destination (barista, gate agent, receptionist, interviewer, ...). char_c ONLY appears in the core phase.
-- The dialogue is ONE array of exactly {num_lines} lines, IN THIS EXACT ORDER, each line carrying a "phase" field:
-  - lines 1-{n_buildup}: "phase": "buildup" — ONLY char_a and char_b speak. They express the need, discuss what each wants, and THE LISTENING QUESTION ARISES NATURALLY — one character asks a curious question related to the topic, the other says something like "I'll tell you later" or "you'll find out". Weave in the target vocabulary.
-  - lines {n_buildup + 1}-{n_buildup + n_core}: "phase": "core" — char_a, char_b, AND char_c all speak. This is the practical heart: friend-to-friend education (explaining menu/options/how things work) AND transactions with the staff (greetings, polite requests, price/payment/confirmation). Extremely short, colloquial sentences. char_c MUST appear at least once in this phase.
-  - lines {n_buildup + n_core + 1}-{n_buildup + n_core + n_reveal}: "phase": "reveal" — ONLY char_a and char_b speak. After trying/experiencing the thing, one friend EXPLAINS THE ANSWER to the listening question. The other friend is surprised ("Really? I thought..."). Clarify the common misunderstanding.
-  - lines {n_buildup + n_core + n_reveal + 1}-{num_lines}: "phase": "review" — ONLY char_a and char_b speak. They evaluate the experience, CONFIRM THE ANSWER (one asks the question again, the other answers correctly), reuse target vocabulary in NEW sentence patterns, and mention coming back.
-- CRITICAL: buildup, reveal, and review lines MUST use speaker "char_a" or "char_b" ONLY. Core lines MAY use "char_a", "char_b", or "char_c". Never let char_c appear outside core lines.
-- Every dialogue line MUST include:
-  - "speaker": "char_a" | "char_b" | "char_c"
-  - "text": the English sentence (max 10 words)
-  - "phase": "buildup" | "core" | "reveal" | "review"
-  - "on_screen": an array specifying WHICH characters are visible in the frame for this line. Use this to create visual variety:
-    - ["char_a", "char_b"] — both friends on screen (speaker on left, listener on right). Use this for MOST buildup/reveal/review lines where both friends are present.
-    - ["char_a"] or ["char_b"] — only one character visible (close-up). Use occasionally for emotional or important lines.
-    - ["char_a", "char_c"] — customer + staff on screen. Use for core transaction lines where both interact.
-    - [] (empty array) — NO character on screen, scene/object shot only. Use 2-4 times total for establishing shots of the environment, menu, product, or location (e.g. a wide shot of the shop interior, a close-up of a menu board, a drink being prepared). These lines have a speaker (narration continues) but the visual is the scene without characters.
-  - "phonetic": IPA phonetic transcription in /slashes/ (use proper IPA symbols)
-  - "zh": Traditional Chinese (繁體中文) translation
-  - "image_prompt": a detailed prompt for ONE scene image: (1) the speaker's EXACT physical description (identical every time for the same character), (2) their role, (3) the scene location, (4) the action matching the dialogue text, (5) if two characters appear, describe both consistently. 3D cartoon style, 16:9.
-- "welcome_en": a very short channel welcome line (max 8 words, e.g. "Welcome to English listening channel.")
-- "welcome_zh": Traditional Chinese translation of the welcome line
-- "char_a_description": detailed physical description of char_a (gender, hair, clothing). MUST be used identically in ALL char_a image_prompt entries.
-- "char_b_description": detailed physical description of char_b. MUST be identical across ALL char_b entries.
-- "char_c_description": detailed physical description of char_c (the staff member, including uniform or work attire). MUST be identical across ALL char_c entries.
-- "host_description": detailed physical description of the HOST/NARRATOR character who appears on-screen in the Welcome, Hook Intro, and Outro segments (gender, hair, clothing — should look like a friendly, warm TV show host, NOT one of the 3 dialogue characters). This is a SEPARATE fourth character who never appears in the dialogue.
-- "host_gender": "male" or "female"
-- "host_bg_prompt": a prompt for the TV studio background where the host appears (e.g. "a bright modern TV studio set with a large screen behind, warm lighting, plants on the side, professional news desk feel, 3D cartoon style, no people"). This background is used for all host segments.
-- "char_a_gender", "char_b_gender", "char_c_gender": "male" or "female"
-- "char_a_role", "char_b_role", "char_c_role": their roles (e.g. "office worker", "colleague", "barista")
-- "listening_question_en": ONE specific, simple listening question whose ANSWER is revealed inside the REVEAL phase of the dialogue (e.g. "Why is it called bubble tea?"). The viewer must listen for it. Max 12 words.
-- "listening_question_zh": Traditional Chinese translation of the question
-- "hook_intro_en": the narrator's opening (60-90 seconds when read slowly, roughly 70-110 words, short simple sentences): (1) warm greeting and topic introduction, (2) reassure that you will speak VERY slowly and clearly, (3) give the listening task — repeat the listening question, (4) tell viewers the answer is INSIDE the video, (5) encourage them to write the answer in English in the comments at the end, (6) "Okay, let's begin." A1-level English.
-- "hook_intro_zh": Traditional Chinese translation of the hook intro
-- "key_words": an array of exactly 5-8 objects {{"en": string, "zh": string}} — the target vocabulary of this lesson (used for video description)
-- "outro": the narrator's closing (60-90 seconds, ~80-110 words, short sentences): (1) a brief transition ("How was it?"), (2) warmly repeat the listening question, (3) encourage viewers to answer in English in the comments — even one simple sentence is perfect, (4) briefly describe the channel ("slow and easy English with small but useful tips"), (5) ask to subscribe, like, and mention channel memberships, (6) "See you next time. Bye." A1-level English.
-- "outro_zh": Traditional Chinese translation of the outro
-- "youtube_title": a high-CTR YouTube title for overseas Chinese beginners. ALL Chinese in Traditional Chinese (繁體中文). Prefer Pattern D for this series (vary a little between videos):
-  Pattern D: 【慢速英文聽力】{{emoji}}{{topic 繁中}}情境對話｜超慢速清晰發音｜初學者必聽｜帶著問題聽，答案就在影片裡！｜留言寫下你的答案｜{{English topic}}
-  You may also use Pattern A/B/C:
-  Pattern A: 【沉浸式英文動畫】{{hook phrase}} {{emoji}} {{topic description in 繁中}}：{{specific skills listed}}，聽完就能說！｜{{English topic}}
-  Pattern B: 【每天50句英文】{{emoji}}{{topic 繁中}}情境對話｜🎬沉浸式英文動畫｜旅行必備英文｜不用背多聽就會用｜英文聽力訓練｜情境英文對話｜高頻口語句型｜英文口說跟讀練習｜英文高效學習法
-  Rules: Start with 【】bracket tag. Use ｜ as separator. Include 3-8 topic-relevant emoji. End with ｜{{English topic name}}. Title length 80-150 chars.
-- "youtube_description": a full YouTube description (max 3000 chars). First line hook with the main keyword. Include the listening question early, a "⏱️ Chapters:" section with timestamps for: 00:00 Intro · Listening Task, 00:xx Slow Dialogue, 00:xx Outro · Answer & CTA. Also list the key_words with 繁中 meanings. End with 3 hashtags (#EnglishListening #SlowEnglish #LearnEnglish) and a subscribe CTA. ALL Chinese in Traditional Chinese.
-- "youtube_tags": an array of 15-20 SEO tags (mix short and long-tail, English + Traditional Chinese, include "slow English", "English for beginners")
-- "scene": the English name of the scene/location (e.g. "coffee shop", "airport check-in counter", "hotel lobby")
-- "scene_images": an array of 3-5 objects, each describing a DIFFERENT camera angle or area of the scene for visual variety. Each object has "prompt" (a detailed image generation prompt for that scene view, 3D cartoon style, 16:9, no people) and "label" (short English label like "counter", "menu board", "entrance", "seating area"). These different backgrounds will be used for different groups of dialogue lines to create visual variety.
-- "thumbnail_expression", "thumbnail_action": as usual (main character on thumbnail)
-- "thumbnail_subtitle": short Traditional Chinese subtitle (e.g. "慢速聽力", "初學者必聽", "帶著問題聽")
-- "thumbnail_icons": an array of 4-5 objects {{"en": string, "zh": string}} — target words shown as circular icons
-- "thumbnail_prompt": detailed prompt for the thumbnail background image (3D Pixar style, expressive face, the scene, bright colors)
-- "title": English title (e.g. "AT THE COFFEE SHOP")
-- "cefr": exactly "{cefr}"
-- "title_zh": Traditional Chinese short title (max 6 characters)
-- "scene_zh": Traditional Chinese scene description (e.g. "咖啡廳 · 點餐")
-- "story_hook": a compelling 1-sentence intro that sets the scene
-- "intro_zh": Traditional Chinese translation of the story hook
-- "practice_intro_en" / "practice_intro_zh": short generic placeholders (kept for schema compatibility)
-- ALL Chinese text MUST be in Traditional Chinese (繁體中文)
-- CRITICAL: the gender in each char description MUST be consistent with ALL of that character's image_prompt entries.
-- CRITICAL: each character's physical description MUST be IDENTICAL across ALL their image_prompt entries. Do not change hair, clothing, or any trait between lines.
-- CRITICAL: the scene location MUST be consistent throughout ALL lines (one main location for the whole topic).
-- CRITICAL: the speaker field MUST use "char_a", "char_b", or "char_c" — never actual names.
-
-JSON schema:
-{{
-  "title": string,
-  "cefr": string,
-  "title_zh": string,
-  "scene_zh": string,
-  "lesson_type": "listening",
-  "story_hook": string,
-  "intro_zh": string,
-  "welcome_en": string,
-  "welcome_zh": string,
-  "hook_intro_en": string,
-  "hook_intro_zh": string,
-  "listening_question_en": string,
-  "listening_question_zh": string,
-  "key_words": [{{"en": string, "zh": string}}],
-  "outro": string,
-  "outro_zh": string,
-  "practice_intro_en": string,
-  "practice_intro_zh": string,
-  "char_a_description": string,
-  "char_b_description": string,
-  "char_c_description": string,
-  "char_a_gender": string,
-  "char_b_gender": string,
-  "char_c_gender": string,
-  "host_description": string,
-  "host_gender": string,
-  "host_bg_prompt": string,
-  "char_a_role": string,
-  "char_b_role": string,
-  "char_c_role": string,
-  "youtube_title": string,
-  "youtube_description": string,
-  "youtube_tags": [string],
-  "thumbnail_prompt": string,
-  "scene": string,
-  "scene_images": [{{"prompt": string, "label": string}}],
-  "thumbnail_expression": string,
-  "thumbnail_action": string,
-  "thumbnail_subtitle": string,
-  "thumbnail_icons": [{{"en": string, "zh": string}}],
-  "dialogue": [{{"speaker": string, "phase": string, "on_screen": [string], "text": string, "phonetic": string, "zh": string, "image_prompt": string}}]
-}}
-
-Topic: {topic}"""
-
-
 def generate_quest_script(topic: str, cefr: str = "A1",
                           lessons_dir: str = None,
                           num_lines: int = 48) -> dict:
@@ -291,47 +139,46 @@ def generate_quest_script(topic: str, cefr: str = "A1",
         meta_prompt, temperature=0.6, max_tokens=8192, reasoning_effort="low",
         label="metadata")
 
-    # ── Round 4: Per-line enhancement ───────────────────────────────────
+    # ── Round 4: Per-line enhancement (batched to avoid 524 timeouts) ──
     print("  [LLM] Round 4: Per-line enhancement...")
-    enhance_prompt = _build_enhance_prompt(all_dialogue, outline)
-    try:
-        enhanced = _chat_and_parse(
-            enhance_prompt, temperature=0.3, max_tokens=8192, reasoning_effort="low",
-            label="enhance")
-    except RuntimeError as e:
-        print(f"  [LLM] Round 4 failed ({e}), skipping enhancement")
-        enhanced = []
+    enh_batch_size = 16  # process 16 lines at a time to keep response small
+    all_enhanced = []
+    for batch_start in range(0, len(all_dialogue), enh_batch_size):
+        batch = all_dialogue[batch_start:batch_start + enh_batch_size]
+        # Re-index batch to 0-based for the LLM, then map back
+        batch_reindexed = [
+            {"i": j, "s": d.get("speaker", ""), "t": d.get("text", ""), "p": d.get("phase", "")}
+            for j, d in enumerate(batch)
+        ]
+        batch_prompt = _build_enhance_prompt_from_reindexed(batch_reindexed, outline)
+        try:
+            batch_result = _chat_and_parse(
+                batch_prompt, temperature=0.3, max_tokens=4096, reasoning_effort="low",
+                label=f"enhance_{batch_start}")
+            if isinstance(batch_result, list):
+                for enh in batch_result:
+                    if isinstance(enh, dict):
+                        j = enh.get("i", -1)
+                        if 0 <= j < len(batch):
+                            all_enhanced.append((batch_start + j, enh))
+        except RuntimeError as e:
+            print(f"  [LLM] Round 4 batch {batch_start} failed ({e}), skipping")
 
-    # Merge enhanced fields into dialogue — direct assignment, not setdefault,
-    # so Round 4 can override empty/placeholder values from earlier rounds.
-    if isinstance(enhanced, list):
-        # Build index from enhanced items (match by 'i' field, or by position)
-        enh_by_idx = {}
-        for enh in enhanced:
-            if isinstance(enh, dict):
-                idx = enh.get("i", -1)
-                if idx >= 0:
-                    enh_by_idx[idx] = enh
-        # Fallback: if no 'i' fields, match by position
-        if not enh_by_idx and len(enhanced) == len(all_dialogue):
-            enh_by_idx = {i: e for i, e in enumerate(enhanced)}
-
-        for i, line in enumerate(all_dialogue):
-            enh = enh_by_idx.get(i)
-            if not enh:
-                continue
-            zh = enh.get("zh", "").strip()
-            if zh:
-                line["zh"] = zh
-            phonetic = enh.get("phonetic", "").strip()
-            if phonetic:
-                line["phonetic"] = phonetic
-            on_screen = enh.get("on_screen")
-            if on_screen is not None:
-                line["on_screen"] = on_screen
-            img = enh.get("image_prompt", "").strip()
-            if img:
-                line["image_prompt"] = img
+    # Merge enhanced fields into dialogue
+    enh_by_idx = {abs_idx: enh for abs_idx, enh in all_enhanced}
+    for i, line in enumerate(all_dialogue):
+        enh = enh_by_idx.get(i)
+        if not enh:
+            continue
+        phonetic = enh.get("phonetic", "").strip()
+        if phonetic:
+            line["phonetic"] = phonetic
+        on_screen = enh.get("on_screen")
+        if on_screen is not None:
+            line["on_screen"] = on_screen
+        img = enh.get("image_prompt", "").strip()
+        if img:
+            line["image_prompt"] = img
 
     # ── Fallback: fill any still-empty zh via a small targeted call ─────
     empty_zh = [(i, d.get("text", "")) for i, d in enumerate(all_dialogue)
@@ -650,7 +497,7 @@ RULES:
 - {rules}
 
 Output: JSON array of exactly {n_lines} objects:
-[{{"speaker": "char_a"|"char_b"|"char_c", "text": "English sentence", "phase": "{phase}", "zh": "繁體中文翻譯", "emotion": "happy|curious|surprised|excited|calm|confused"}}]
+[{{"speaker":"char_a","text":"English sentence","phase":"{phase}","zh":"繁體中文翻譯"}}]
 
 Every line MUST include "zh": a Traditional Chinese (繁體中文) translation of the English text.
 NO markdown, NO explanation. JSON array ONLY."""
@@ -672,9 +519,9 @@ NO markdown, NO explanation. JSON array ONLY."""
 def _build_metadata_prompt(topic: str, cefr: str, outline: dict, dialogue: list[dict]) -> str:
     import json
     dialogue_text = json.dumps(
-        [{"speaker": d.get("speaker",""), "text": d.get("text",""), "phase": d.get("phase","")}
+        [{"s": d.get("speaker",""), "t": d.get("text",""), "p": d.get("phase","")}
          for d in dialogue],
-        ensure_ascii=False, indent=2)
+        ensure_ascii=False, separators=(",",":"))
     return f"""You are a YouTube content strategist. Generate narration and metadata for this ESL video.
 
 Topic: {topic} ({cefr})
@@ -715,42 +562,33 @@ JSON ONLY, no markdown."""
 
 
 # ---------------------------------------------------------------------------
-# Round 4: Per-line enhancement prompt
+# Round 4: Per-line enhancement prompt (batched)
 # ---------------------------------------------------------------------------
 
-def _build_enhance_prompt(dialogue: list[dict], outline: dict) -> str:
+def _build_enhance_prompt_from_reindexed(batch_lines: list[dict], outline: dict) -> str:
+    """Build enhancement prompt for a batch of lines (0-indexed within batch)."""
     import json
-    lines_json = json.dumps(
-        [{"i": i, "speaker": d.get("speaker",""), "text": d.get("text",""), "phase": d.get("phase","")}
-         for i, d in enumerate(dialogue)],
-        ensure_ascii=False, indent=2)
+    lines_json = json.dumps(batch_lines, ensure_ascii=False, separators=(",",":"))
     char_a = outline.get("char_a_description", "")
     char_b = outline.get("char_b_description", "")
     char_c = outline.get("char_c_description", "")
     scene = outline.get("scene", "")
-    return f"""You are a phonetics expert and ESL teacher. Add phonetic, translation, and visual direction to each dialogue line.
+    return f"""Add IPA phonetic, on_screen direction, and image_prompt to each dialogue line.
 
-Characters:
-- char_a: {char_a}
-- char_b: {char_b}
-- char_c: {char_c}
+Characters: char_a={char_a} / char_b={char_b} / char_c={char_c}
 Scene: {scene}
 
-Dialogue lines:
+Lines:
 {lines_json}
 
-For each line, add:
+For each line add:
 - "phonetic": IPA in /slashes/
-- "zh": 繁體中文 translation
-- "on_screen": array of visible characters (e.g. ["char_a","char_b"], ["char_a"], or [] for scene-only shot)
-  - buildup/review: mostly ["char_a","char_b"]
-  - core: mix of ["char_a","char_c"], ["char_b","char_c"], ["char_a","char_b"]
-  - Use [] (empty) for 2-4 lines total (environment/menu/object shots)
-- "image_prompt": scene image description (3D cartoon style, 16:9)
+- "on_screen": visible chars, e.g. ["char_a","char_b"] or [] for scene shot (2-4 total)
+  - buildup/review: mostly ["char_a","char_b"]; core: mix with ["char_c"]
+- "image_prompt": brief scene description (3D cartoon, 16:9), include the speaker's appearance + action
 
-Output: JSON array, same length and order as input:
-[{{"i": 0, "phonetic": "/.../ ", "zh": "繁中", "on_screen": ["char_a","char_b"], "image_prompt": "..."}}]
-
+Output: JSON array, same length and order:
+[{{"i":0,"phonetic":"/.../","on_screen":["char_a","char_b"],"image_prompt":"..."}}]
 JSON array ONLY."""
 
 
