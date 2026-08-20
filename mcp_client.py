@@ -235,7 +235,8 @@ def poll_task(task_id, interval=40, max_wait=600):
                         task_data["error"] = res_json["error"]
                     elif data.get("error"):
                         task_data["error"] = data["error"]
-                    elif data.get("message"):
+                    # Only treat "message" as error if status is failed
+                    elif data.get("message") and res_json.get("status") == "failed":
                         task_data["error"] = data["message"]
                     result_obj = data.get("result") or {}
                     url = result_obj.get("video_url", "") or result_obj.get("image_url", "")

@@ -407,9 +407,14 @@ def generate_quest_atlases(script, img_dir, tts_thread):
             data = poll_task(task_id, interval=10, max_wait=600)
             url = data.get("url", "")
             if not url:
-                # Debug: print raw response to diagnose URL parsing failure
-                raw = data.get("raw_json", data.get("raw_text", ""))
-                print(f"    [QuestAtlas] DEBUG {char_key} raw response: {str(raw)[:500]}")
+                # Debug: dump all keys from poll_task response
+                print(f"    [QuestAtlas] DEBUG {char_key} keys={list(data.keys())}")
+                print(f"    [QuestAtlas] DEBUG {char_key} status={data.get('status','')}")
+                print(f"    [QuestAtlas] DEBUG {char_key} error={data.get('error','')}")
+                raw = data.get("raw_json", "")
+                if not raw:
+                    raw = data.get("raw_text", "")
+                print(f"    [QuestAtlas] DEBUG {char_key} raw={str(raw)[:800]}")
                 print(f"    [QuestAtlas] WARNING: No URL for {char_key}")
                 continue
             download_file(url, atlas_path)
