@@ -5,7 +5,7 @@ Consolidates previously duplicated code from:
   - pipeline._get_audio_duration
   - video_compose._get_duration / _probe_resolution / _has_audio
   - tts_engine.TTSEngine.get_duration
-  - video_compose + enhanced + quest: concat, subtitle burn, loudnorm
+  - video_compose + quest: concat, subtitle burn, loudnorm
   - pipeline._safe_dirname + video_compose inline _re.sub
 """
 import os
@@ -464,7 +464,7 @@ def build_srt(timeline: list[dict], skip_types: set[str] | None = None,
     skipped.
 
     Consolidates timeline.build_srt_from_timeline,
-    enhanced.build_srt_from_timeline_enhanced, quest.build_srt_from_timeline_quest.
+    quest.build_srt_from_timeline_quest.
     """
     if skip_types is None:
         skip_types = {"listen_en", "listen_zh", "practice",

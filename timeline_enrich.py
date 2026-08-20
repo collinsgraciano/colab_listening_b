@@ -10,8 +10,7 @@ def enrich_timeline(timeline: list[dict], tts, pad: float,
                      slow_durations: list[float] | None = None) -> None:
     """Fill seg['audio_dur'] and pad-inclusive seg['duration'] for all segment types.
 
-    Shared by original/static and enhanced structures — enhanced-only segment
-    types (vocab/quiz/dialogue_slow) are ignored when their durations are None.
+    Shared by original/static and quest structures.
     Mutates the timeline in place.
     """
     def _safe_index(durs, idx, default):

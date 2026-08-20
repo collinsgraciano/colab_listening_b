@@ -73,7 +73,7 @@ from group_audio import build_group_info as _build_group_info
 # Script validation + generation
 # ---------------------------------------------------------------------------
 
-def _validate_script(script: dict, num_lines: int, enhanced: bool = False,
+def _validate_script(script: dict, num_lines: int,
                      quest: bool = False) -> tuple[bool, str]:
     """Validate a generated script. Returns (is_valid, error_message)."""
     dialogue = script.get("dialogue", [])
@@ -89,13 +89,6 @@ def _validate_script(script: dict, num_lines: int, enhanced: bool = False,
             return False, f"Dialogue line {i} has empty 'phonetic'"
         if not line.get("speaker", ""):
             return False, f"Dialogue line {i} has empty 'speaker'"
-    if enhanced:
-        vocab = script.get("vocabulary", [])
-        if len(vocab) < 3:
-            return False, f"Vocabulary count {len(vocab)} < required 3"
-        questions = script.get("comprehension_questions", [])
-        if len(questions) < 1:
-            return False, f"Comprehension questions count {len(questions)} < required 1"
     if quest:
         if not script.get("listening_question_en", "").strip():
             return False, "Quest script has empty 'listening_question_en'"
@@ -130,7 +123,7 @@ def _validate_script(script: dict, num_lines: int, enhanced: bool = False,
 
 
 def _generate_script_with_retry(topic, cefr, lessons_dir, num_lines,
-                                enhanced=False, quest=False, max_attempts=5) -> dict:
+                                quest=False, max_attempts=5) -> dict:
     """Generate and validate script, retrying on failure."""
     for attempt in range(max_attempts):
         try:
@@ -139,15 +132,10 @@ def _generate_script_with_retry(topic, cefr, lessons_dir, num_lines,
                 from quest.llm_client_quest import generate_quest_script
                 script = generate_quest_script(topic, cefr, lessons_dir=lessons_dir,
                                                num_lines=num_lines)
-            elif enhanced:
-                from enhanced.llm_client_enhanced import generate_listening_script_enhanced
-                script = generate_listening_script_enhanced(topic, cefr,
-                                                             lessons_dir=lessons_dir,
-                                                             num_lines=num_lines)
             else:
                 script = generate_listening_script(topic, cefr, lessons_dir=lessons_dir,
                                                    num_lines=num_lines)
-            valid, msg = _validate_script(script, num_lines, enhanced=enhanced, quest=quest)
+            valid, msg = _validate_script(script, num_lines, quest=quest)
             if valid:
                 print(f"  [Script] Valid: {len(script['dialogue'])} lines")
                 return script
@@ -180,8 +168,8 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=None, help="SenseNova API key (or set SENSENOVA_API_KEY env var)")
     parser.add_argument("--model", default=None, choices=["deepseek-v4-flash", "glm-5.2"],
                         help="SenseNova LLM model: 'deepseek-v4-flash' (default) or 'glm-5.2'")
-    parser.add_argument("--structure", default="original", choices=["original", "enhanced", "static", "static_animated", "stop_motion", "quest"],
-                        help="Video structure: 'original' (4-chapter, video clips), 'enhanced' (7-chapter), 'static' (all images), 'static_animated' (static + landing transform), 'stop_motion' (multi-pose + optical flow), or 'quest' (task-hook listening)")
+    parser.add_argument("--structure", default="original", choices=["original", "static", "static_animated", "stop_motion", "quest"],
+                        help="Video structure: 'original' (4-chapter, video clips), 'static' (all images), 'static_animated' (static + landing transform), 'stop_motion' (multi-pose + optical flow), or 'quest' (task-hook listening)")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
     parser.add_argument("--no-4k", dest="no_4k", action="store_true", help="Skip the final 4K upscaling step")
     parser.add_argument("--upscale-timeout", type=int, default=3600, help="Timeout in seconds for 4K upscale (default 3600)")
@@ -239,14 +227,15 @@ def _step0_script(args, checkpoint: dict, topic: str, parent_dir: Path,
 
     dirs = _dirs(work_dir)
     script_path = work_dir / "script.json"
-    if _step_done(checkpoint, "step0_script") and script_path.exists():
+    cp_structure = checkpoint.get("structure")
+    if (_step_done(checkpoint, "step0_script") and script_path.exists()
+            and cp_structure == args.structure):
         print("  [Resume] Loading existing script...")
         script = json.loads(script_path.read_text(encoding="utf-8"))
         mark_topic_used(used_topics_file, topic)
     else:
         script = _generate_script_with_retry(topic, args.cefr, args.lessons_dir,
                                              args.num_lines,
-                                             enhanced=(args.structure == "enhanced"),
                                              quest=(args.structure == "quest"))
         yt_title = script.get("youtube_title", script.get("title", topic))
         safe_title = _safe_dirname(yt_title, topic)
@@ -285,7 +274,6 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
 
     dialogue = script.get("dialogue", [])
     n = len(dialogue)
-    is_enhanced = (args.structure == "enhanced")
     is_static = (args.structure in ("static", "static_animated"))
     is_stop_motion = (args.structure == "stop_motion")
     is_quest = (args.structure == "quest")
@@ -321,7 +309,7 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
             image_prompts.append((si_prompt, f"scene_{si}.png"))
 
     # --- Resume check ---
-    resume_result = _check_step2_resume(checkpoint, script, dirs, n, is_enhanced, is_quest)
+    resume_result = _check_step2_resume(checkpoint, script, dirs, n, is_quest)
     tts_thread = None
     if resume_result is not None:
         tts_results, image_urls = resume_result
@@ -330,7 +318,7 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
 
         def _tts_worker():
             try:
-                _generate_tts(script, dialogue, audio_dir, tts_results, is_enhanced,
+                _generate_tts(script, dialogue, audio_dir, tts_results,
                               quest=is_quest)
             except Exception as e:
                 import traceback
@@ -485,7 +473,6 @@ def _step4_timeline(args, checkpoint: dict, script: dict, work_dir: Path,
     sub_dir = dirs["subtitles"]
     srt_path = sub_dir / "output.srt"
     meta_path = sub_dir / "meta.json"
-    is_enhanced = (args.structure == "enhanced")
 
     if _step_done(checkpoint, "step4_timeline") and srt_path.exists() and meta_path.exists():
         print("  [Resume] Loading existing timeline + SRT...")
@@ -499,25 +486,7 @@ def _step4_timeline(args, checkpoint: dict, script: dict, work_dir: Path,
     normal_paths = tts_results.get("normal_paths", [])
     zh_paths = tts_results.get("zh_paths", [])
 
-    if is_enhanced:
-        from enhanced.timeline_enhanced import build_enhanced_timeline, build_srt_from_timeline_enhanced
-        slow_paths = tts_results.get("slow_paths", [])
-        slow_durations = tts_results.get("slow_durations", [])
-        vocab_paths = tts_results.get("vocab_paths", [])
-        quiz_paths = tts_results.get("quiz_paths", [])
-        vocab_durations = [tts.get_duration(p) if p and os.path.exists(p) else 4.0 for p in vocab_paths]
-        quiz_durations = [tts.get_duration(p) if p and os.path.exists(p) else 6.0 for p in quiz_paths]
-
-        timeline = build_enhanced_timeline(
-            script, dialogue_durations, slow_durations,
-            vocab_durations, quiz_durations,
-            pad=args.pad, practice_duration=args.practice_duration,
-        )
-        _enrich_timeline(timeline, tts, args.pad, dialogue_durations, zh_paths, narration,
-                         vocab_durations=vocab_durations, quiz_durations=quiz_durations,
-                         slow_durations=slow_durations)
-        srt = build_srt_from_timeline_enhanced(timeline, gap=0.0)
-    elif args.structure == "quest":
+    if args.structure == "quest":
         from quest.timeline_quest import build_quest_timeline, build_srt_from_timeline_quest
         timeline = build_quest_timeline(script, dialogue_durations, pad=args.pad)
         _enrich_timeline(timeline, tts, args.pad, dialogue_durations, zh_paths, narration)
@@ -542,10 +511,6 @@ def _step4_timeline(args, checkpoint: dict, script: dict, work_dir: Path,
         "normal_paths": normal_paths,
         "zh_paths": zh_paths,
     }
-    if is_enhanced:
-        meta["slow_paths"] = tts_results.get("slow_paths", [])
-        meta["vocab_paths"] = tts_results.get("vocab_paths", [])
-        meta["quiz_paths"] = tts_results.get("quiz_paths", [])
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"  Meta saved: {meta_path}")
     _save_checkpoint(work_dir, "step4_timeline")
@@ -606,27 +571,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
         print("  [Resume] Final video already exists, skipping compose...")
         return str(final_video_path), safe_vid_name
 
-    if args.structure == "enhanced":
-        from enhanced.video_compose_enhanced import compose_listening_enhanced
-        final_path = compose_listening_enhanced(
-            work_dir=str(work_dir),
-            clip_paths=clip_paths,
-            timeline=timeline,
-            script=script,
-            narration=narration,
-            normal_paths=normal_paths,
-            zh_paths=zh_paths,
-            slow_paths=tts_results.get("slow_paths", []),
-            vocab_paths=tts_results.get("vocab_paths", []),
-            quiz_paths=tts_results.get("quiz_paths", []),
-            scene_img=scene_img,
-            srt_dir=str(sub_dir),
-            pad=args.pad,
-            progress_cb=progress_cb,
-            group_info=group_info,
-            line_to_group=line_to_group,
-        )
-    elif args.structure == "quest":
+    if args.structure == "quest":
         from quest.video_compose_quest import compose_quest
         # Build per-character pose map (all chars: 8 poses each)
         char_pose_map = {}
@@ -816,7 +761,12 @@ def main():
     if args.resume:
         checkpoint = _load_checkpoint(parent_dir)
         if checkpoint:
-            print(f"  [Resume] Found checkpoint: {checkpoint.get('completed_steps', [])}")
+            cp_struct = checkpoint.get("structure")
+            if cp_struct and cp_struct != args.structure:
+                print(f"  [Resume] Structure changed ({cp_struct} → {args.structure}), starting fresh.")
+                checkpoint = {}
+            else:
+                print(f"  [Resume] Found checkpoint: {checkpoint.get('completed_steps', [])}")
         else:
             print(f"  [Resume] No incomplete checkpoint, starting fresh.")
             checkpoint = {}

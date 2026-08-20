@@ -16,26 +16,6 @@ from llm_client import generate_listening_script
 from timeline import build_listening_timeline, build_srt_from_timeline
 from video_compose import compose_listening, compose_static
 
-# --- Enhanced (lazy import to avoid circular deps) ---
-def _enhanced_script(topic, cefr, lessons_dir, num_lines):
-    from enhanced.llm_client_enhanced import generate_listening_script_enhanced
-    return generate_listening_script_enhanced(topic, cefr, lessons_dir=lessons_dir, num_lines=num_lines)
-
-def _enhanced_timeline(script, dialogue_durations, slow_durations,
-                        vocab_durations, quiz_durations, pad, practice_duration):
-    from enhanced.timeline_enhanced import build_enhanced_timeline
-    return build_enhanced_timeline(script, dialogue_durations, slow_durations,
-                                   vocab_durations, quiz_durations,
-                                   pad=pad, practice_duration=practice_duration)
-
-def _enhanced_srt(timeline, gap=0.0):
-    from enhanced.timeline_enhanced import build_srt_from_timeline_enhanced
-    return build_srt_from_timeline_enhanced(timeline, gap=gap)
-
-def _enhanced_compose(**kwargs):
-    from enhanced.video_compose_enhanced import compose_listening_enhanced
-    return compose_listening_enhanced(**kwargs)
-
 # --- Quest (lazy import) ---
 def _quest_script(topic, cefr, lessons_dir, num_lines):
     from quest.llm_client_quest import generate_quest_script
@@ -67,16 +47,6 @@ STRUCTURES = {
             script, ddur, pad=pad, practice_duration=pd),
         "build_srt": lambda tl, gap=0.0: build_srt_from_timeline(tl, gap=gap),
         "compose": compose_listening,
-        "needs_video_clips": True,
-        "needs_zh_tts": True,
-        "needs_dialogue_images": False,
-    },
-    "enhanced": {
-        "generate_script": _enhanced_script,
-        "build_timeline": lambda script, ddur, pad, pd: _enhanced_timeline(
-            script, ddur, [], [], [], pad, pd),  # slow/vocab/quiz durations filled by caller
-        "build_srt": _enhanced_srt,
-        "compose": _enhanced_compose,
         "needs_video_clips": True,
         "needs_zh_tts": True,
         "needs_dialogue_images": False,

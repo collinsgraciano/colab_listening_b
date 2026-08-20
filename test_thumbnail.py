@@ -5,7 +5,7 @@ Calls LLM to generate a full script (including title_zh, thumbnail_* fields),
 then uses that script to build the thumbnail prompt and generate the image.
 
 Usage:
-    python test_thumbnail.py --topic "At the Pharmacy" --cefr A2 --structure enhanced
+    python test_thumbnail.py --topic "At the Pharmacy" --cefr A2 --structure quest
     python test_thumbnail.py --batch
 """
 import argparse
@@ -142,10 +142,10 @@ def test_multiple_thumbnails(mcp_token: str = None, api_key: str = None,
                               output_dir: str = "./test_thumbnails"):
     """Generate multiple test thumbnails for comparison."""
     test_cases = [
-        ("At the Pharmacy", "A2", "enhanced"),
-        ("Ordering Coffee", "A1", "enhanced"),
-        ("Job Interview", "B1", "enhanced"),
         ("At the Airport", "A2", "original"),
+        ("Ordering Coffee", "A1", "quest"),
+        ("Job Interview", "B1", "original"),
+        ("At the Pharmacy", "A2", "quest"),
     ]
 
     print("=" * 60)
@@ -192,8 +192,8 @@ def main():
     parser.add_argument("--topic", default=None,
                         help="Topic (e.g. 'At the Pharmacy')")
     parser.add_argument("--cefr", default="A2", help="CEFR level (default A2)")
-    parser.add_argument("--structure", default="enhanced",
-                        choices=["original", "enhanced"],
+    parser.add_argument("--structure", default="original",
+                        choices=["original", "static", "quest"],
                         help="Video structure (affects top center text)")
     parser.add_argument("--output", default="./test_thumbnails",
                         help="Output directory")
@@ -213,7 +213,7 @@ def main():
     else:
         parser.print_help()
         print("\nExamples:")
-        print("  python test_thumbnail.py --topic 'At the Pharmacy' --cefr A2 --structure enhanced --api-key YOUR_KEY --mcp-token YOUR_TOKEN")
+        print("  python test_thumbnail.py --topic 'At the Pharmacy' --cefr A2 --structure quest --api-key YOUR_KEY --mcp-token YOUR_TOKEN")
         print("  python test_thumbnail.py --batch --api-key YOUR_KEY --mcp-token YOUR_TOKEN")
 
 

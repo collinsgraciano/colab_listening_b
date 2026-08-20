@@ -10,7 +10,7 @@ from checkpoint import step_done
 from media_utils import get_duration as _get_audio_duration
 
 
-def check_step2_resume(checkpoint, script, dirs, n, is_enhanced, is_quest):
+def check_step2_resume(checkpoint, script, dirs, n, is_quest):
     """Check if Step 2 can be resumed from existing files. Returns (tts_results, image_urls) or None."""
     img_dir, audio_dir = dirs["images"], dirs["audio"]
     step2_done = step_done(checkpoint, "step2_images_tts")
@@ -76,13 +76,6 @@ def check_step2_resume(checkpoint, script, dirs, n, is_enhanced, is_quest):
         "slow_durations": [],
         "quiz_paths": [],
     }
-    if is_enhanced:
-        vocab_count = len(script.get("vocabulary", []))
-        quiz_count = len(script.get("comprehension_questions", []))
-        tts_results["vocab_paths"] = [str(audio_dir / f"vocab_{i}.mp3") for i in range(vocab_count) if (audio_dir / f"vocab_{i}.mp3").exists()]
-        tts_results["quiz_paths"] = [str(audio_dir / f"quiz_{i}.mp3") for i in range(quiz_count) if (audio_dir / f"quiz_{i}.mp3").exists()]
-        tts_results["slow_paths"] = [str(audio_dir / f"dialogue_slow_{i}.mp3") for i in range(n) if (audio_dir / f"dialogue_slow_{i}.mp3").exists()]
-        tts_results["slow_durations"] = [_get_audio_duration(p) if p else 0.0 for p in tts_results["slow_paths"]]
     print("  [Resume] Images + audio loaded.")
     return tts_results, image_urls
 
@@ -335,7 +328,7 @@ def generate_quest_atlases(script, img_dir, tts_thread):
     ]
     # Also generate per-character half-body reference images
     ref_urls = {}
-    for char_key, char_desc in chars:
+    for char_key, char_desc, _ in chars:
         ref_path = str(img_dir / f"{char_key}_ref.png")
         if not os.path.exists(ref_path):
             print(f"  [QuestRef] Generating {char_key}_ref...")

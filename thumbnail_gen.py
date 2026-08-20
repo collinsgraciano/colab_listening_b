@@ -64,9 +64,7 @@ def _build_thumbnail_prompt(script: dict, structure: str) -> str:
     ])
     icon_lines = "  ".join(f"{i['zh']} {i['en']}" for i in icons[:5])
 
-    if structure == "enhanced":
-        top_center = "沉浸式聽力動畫"
-    elif structure == "quest":
+    if structure == "quest":
         top_center = "慢速英文聽力"
     else:
         top_center = "沉浸式英文動畫"
@@ -232,9 +230,7 @@ def _pillow_fallback(script: dict, scene_img: str, output_path: str,
               cefr, font=bfont, fill=(255, 255, 255, 255))
 
     # Bottom bar
-    if structure == "enhanced":
-        label = "Vocabulary + Quiz + Slow Speed + Shadowing"
-    elif structure == "quest":
+    if structure == "quest":
         label = "Slow Listening + Answer Task"
     else:
         label = "Listen + Repeat + Shadowing"
@@ -261,22 +257,7 @@ def save_youtube_metadata(script: dict, timeline: list[dict],
         seg_type = seg.get("type", "")
         dur = seg.get("duration", 0)
 
-        if structure == "enhanced":
-            if seg_type == "vocab" and "vocabulary" not in timestamps:
-                timestamps["vocabulary"] = t_cursor
-            elif seg_type == "title_card" and "title" not in timestamps:
-                timestamps["title"] = t_cursor
-            elif seg_type == "dialogue" and "dialogue" not in timestamps:
-                timestamps["dialogue"] = t_cursor
-            elif seg_type == "dialogue_slow" and "slow" not in timestamps:
-                timestamps["slow"] = t_cursor
-            elif seg_type == "quiz" and "quiz" not in timestamps:
-                timestamps["quiz"] = t_cursor
-            elif seg_type == "practice_intro" and "shadowing" not in timestamps:
-                timestamps["shadowing"] = t_cursor
-            elif seg_type == "outro" and "outro" not in timestamps:
-                timestamps["outro"] = t_cursor
-        elif structure == "quest":
+        if structure == "quest":
             if seg_type == "title_card" and "title" not in timestamps:
                 timestamps["title"] = t_cursor
             elif seg_type == "hook_intro" and "hook" not in timestamps:
@@ -303,22 +284,7 @@ def save_youtube_metadata(script: dict, timeline: list[dict],
         return f"{m:02d}:{s:02d}"
 
     chapters = []
-    if structure == "enhanced":
-        if "vocabulary" in timestamps:
-            chapters.append(f"{_fmt_ts(timestamps['vocabulary'])} Vocabulary Preview")
-        if "title" in timestamps:
-            chapters.append(f"{_fmt_ts(timestamps['title'])} Title Card")
-        if "dialogue" in timestamps:
-            chapters.append(f"{_fmt_ts(timestamps['dialogue'])} Immersive Dialogue")
-        if "slow" in timestamps:
-            chapters.append(f"{_fmt_ts(timestamps['slow'])} Slow Speed Replay")
-        if "quiz" in timestamps:
-            chapters.append(f"{_fmt_ts(timestamps['quiz'])} Comprehension Quiz")
-        if "shadowing" in timestamps:
-            chapters.append(f"{_fmt_ts(timestamps['shadowing'])} Shadowing Practice")
-        if "outro" in timestamps:
-            chapters.append(f"{_fmt_ts(timestamps['outro'])} Outro")
-    elif structure == "quest":
+    if structure == "quest":
         if "title" in timestamps:
             chapters.append(f"{_fmt_ts(timestamps['title'])} Title")
         if "hook" in timestamps:
