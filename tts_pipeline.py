@@ -4,11 +4,15 @@ import os
 from tts_engine import TTSEngine, build_voice_map, get_zh_voice
 
 
-def generate_tts(script, dialogue, audio_dir, results, quest=False):
+def generate_tts(script, dialogue, audio_dir, results, quest=False, tts_rate=None):
     """Generate all TTS audio. Runs in a thread.
 
     Produces narration and dialogue EN/ZH audio.
     Writes results into the *results* dict (shared with caller).
+
+    Args:
+        tts_rate: Override dialogue English TTS rate (e.g. '-15%', '0%').
+                  If None, uses mode default (quest: '0%', non-quest: '-15%').
     """
     tts = TTSEngine()
     voice_map = build_voice_map(script)
@@ -38,8 +42,8 @@ def generate_tts(script, dialogue, audio_dir, results, quest=False):
                 narration[name] = path
                 print(f"  [TTS] {name}: {dur:.1f}s")
 
-    # Dialogue English (character voices; quest: normal speed)
-    dialogue_rate = "0%" if quest else "-15%"
+    # Dialogue English (character voices; tts_rate overrides mode default)
+    dialogue_rate = tts_rate if tts_rate else ("0%" if quest else "-15%")
     normal_paths = []
     dialogue_durations = []
     for i, line in enumerate(dialogue):

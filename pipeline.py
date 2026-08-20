@@ -172,6 +172,7 @@ def _parse_args() -> argparse.Namespace:
                         help="Video structure: 'original' (4-chapter, video clips), 'static' (all images), 'static_animated' (static + landing transform), 'stop_motion' (multi-pose + optical flow), or 'quest' (task-hook listening)")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
     parser.add_argument("--no-4k", dest="no_4k", action="store_true", help="Skip the final 4K upscaling step")
+    parser.add_argument("--tts-rate", default=None, help="Override dialogue English TTS rate (e.g. '-15%', '0%'). Default: mode-dependent (quest '0%%', others '-15%%')")
     parser.add_argument("--upscale-timeout", type=int, default=3600, help="Timeout in seconds for 4K upscale (default 3600)")
     return parser.parse_args()
 
@@ -319,7 +320,7 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         def _tts_worker():
             try:
                 _generate_tts(script, dialogue, audio_dir, tts_results,
-                              quest=is_quest)
+                              quest=is_quest, tts_rate=args.tts_rate)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
