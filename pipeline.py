@@ -321,8 +321,8 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
     if not is_quest:
         image_prompts.append(
             (f"Character design sheet, {char_a_desc} on the left, {char_b_desc} on the right, plain white background, full body, front view, {_QUEST_STYLE}, no text, no background, 16:9", "char_scene.png"))
-    image_prompts.append(
-        (f"Scene background, {scene}, wide shot, showing all key elements of the scene, {_QUEST_STYLE}, no characters, no text, 16:9", "scene.png"))
+        image_prompts.append(
+            (f"Scene background, {scene}, wide shot, showing all key elements of the scene, {_QUEST_STYLE}, no characters, no text, 16:9", "scene.png"))
     if is_stop_motion:
         # Per-character three-view reference sheets for pose consistency
         image_prompts.append(
@@ -367,9 +367,8 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         if is_image or is_quest:
             char_scene_cdn = image_urls.get("char_scene.png", "")
             if is_quest:
-                # Quest uses per-character atlas (4 chars × 8 poses)
-                ref_urls = _generate_quest_atlases(script, img_dir, tts_thread)
-                image_urls.update(ref_urls)
+                # Quest uses per-character atlas (4 chars × 8 poses), no ref images
+                _generate_quest_atlases(script, img_dir, tts_thread)
             else:
                 _generate_dialogue_images(
                     dialogue, img_dir, char_a_desc, char_b_desc, scene,
@@ -557,15 +556,20 @@ def _step45_thumbnail(args, checkpoint: dict, script: dict, work_dir: Path,
     print("Step 4.5: Generating YouTube metadata + thumbnail...")
     from thumbnail_gen import generate_thumbnail, save_youtube_metadata
 
-    scene_img_full = str(dirs["images"] / "scene.png")
+    # Quest mode uses scene_0.png as thumbnail bg (scene.png not generated)
+    if args.structure == "quest":
+        _s0 = dirs["images"] / "scene_0.png"
+        scene_img_full = str(_s0 if _s0.exists() else dirs["images"] / "scene.png")
+    else:
+        scene_img_full = str(dirs["images"] / "scene.png")
     thumb_path = str(work_dir / "thumbnail.jpg")
     yt_meta_path = str(work_dir / "youtube_metadata.json")
     if _step_done(checkpoint, "step4.5_thumbnail") and os.path.exists(thumb_path) and os.path.exists(yt_meta_path):
         print("  [Resume] Thumbnail + YouTube metadata already exist, skipping...")
         return
-    # Quest mode uses char_a_ref.png; others use char_scene.png
+    # Quest mode uses pose_char_a_0.png; others use char_scene.png
     if args.structure == "quest":
-        char_scene_cdn = ctx["image_urls"].get("char_a_ref.png", "")
+        char_scene_cdn = ctx["image_urls"].get("pose_char_a_0.png", "")
     else:
         char_scene_cdn = ctx["image_urls"].get("char_scene.png", "")
     generate_thumbnail(
@@ -596,6 +600,11 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
     print("\n" + "=" * 60)
     print("Step 5: Composing final video...")
     scene_img = str(dirs["images"] / "scene.png")
+    # Quest mode uses scene_0.png as fallback (scene.png not generated)
+    if args.structure == "quest":
+        _s0 = dirs["images"] / "scene_0.png"
+        if _s0.exists():
+            scene_img = str(_s0)
     sub_dir = dirs["subtitles"]
 
     def progress_cb(pct, msg):

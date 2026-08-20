@@ -15,9 +15,9 @@ def check_step2_resume(checkpoint, script, dirs, n, is_quest, is_stop_motion=Fal
     img_dir, audio_dir = dirs["images"], dirs["audio"]
     step2_done = step_done(checkpoint, "step2_images_tts")
     char_scene_file = img_dir / "char_scene.png"
-    scene_file = img_dir / "scene.png"
-    # Quest mode uses char_a_ref.png instead of char_scene.png
-    ref_file = img_dir / "char_a_ref.png" if is_quest else char_scene_file
+    # Quest mode uses scene_0.png instead of scene.png; pose_char_a_0.png instead of char_scene.png
+    scene_file = img_dir / "scene_0.png" if is_quest else img_dir / "scene.png"
+    ref_file = img_dir / "pose_char_a_0.png" if is_quest else char_scene_file
     all_audio_exist = all((audio_dir / f"dialogue_{i}.mp3").exists() for i in range(n))
     if is_quest:
         all_zh_exist = True
@@ -46,8 +46,8 @@ def check_step2_resume(checkpoint, script, dirs, n, is_quest, is_stop_motion=Fal
         return None
 
     print("  [Resume] Step 2 already done, loading existing images + audio...")
-    # Quest mode re-uploads char_a_ref.png; others re-upload char_scene.png
-    reupload_files = ["char_a_ref.png", "scene.png"] if is_quest else ["char_scene.png", "scene.png"]
+    # Quest mode re-uploads pose_char_a_0.png + scene_0.png; others re-upload char_scene.png + scene.png
+    reupload_files = ["pose_char_a_0.png", "scene_0.png"] if is_quest else ["char_scene.png", "scene.png"]
     image_urls = {}
     for filename in reupload_files:
         filepath = str(img_dir / filename)
@@ -335,47 +335,8 @@ def generate_quest_atlases(script, img_dir, tts_thread):
         ("char_c", script.get("char_c_description", "friendly staff member"), 8),
         ("host", script.get("host_description", "friendly young woman with short brown hair, wearing a smart blue blazer, warm smile, professional TV host appearance"), 8),
     ]
-    # Also generate per-character half-body reference images
-    ref_urls = {}
-    for char_key, char_desc, _ in chars:
-        ref_path = str(img_dir / f"{char_key}_ref.png")
-        if not os.path.exists(ref_path):
-            print(f"  [QuestRef] Generating {char_key}_ref...")
-            try:
-                result = call_tool("generate_image", {
-                    "prompt": (f"Character reference, {char_desc}, single character, "
-                               f"plain white background, half-body close-up, waist up, "
-                               f"front view, 3D cartoon style, no text, no background scene"),
-                    "provider": "seedream",
-                    "image_size": {"width": 1280, "height": 720},
-                    "output_format": "png",
-                })
-                task_id = parse_task_id(result)
-                data = poll_task(task_id, interval=10, max_wait=600)
-                url = data.get("url", "")
-                if url:
-                    download_file(url, ref_path)
-                    ref_urls[char_key] = url
-                    print(f"    [QuestRef] Downloaded: {char_key}_ref.png")
-            except Exception as e:
-                if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
-                    if tts_thread:
-                        tts_thread.join(timeout=5)
-                    sys.exit(1)
-                print(f"    [QuestRef] ERROR: {e}")
-        else:
-            # Re-upload for CDN URL
-            try:
-                upload_result = call_tool("file_upload", {"file_path": ref_path})
-                for item in upload_result.get("result", {}).get("content", []):
-                    if item.get("type") == "resource":
-                        import json
-                        res_json = json.loads(item["resource"]["text"])
-                        ref_urls[char_key] = res_json.get("file_url", "")
-            except Exception:
-                pass
 
-    # Generate atlases — all characters use 4×2 (8 poses)
+    # Generate atlases directly from text (no separate ref images needed)
     for char_key, char_desc, n_poses in chars:
         all_exist = all(
             os.path.exists(str(img_dir / f"pose_{char_key}_{j}.png"))
@@ -408,9 +369,6 @@ def generate_quest_atlases(script, img_dir, tts_thread):
                 "image_size": img_size,
                 "output_format": "png",
             }
-            ref_cdn = ref_urls.get(char_key, "")
-            if ref_cdn:
-                gen_params["image_urls"] = ref_cdn
             result = call_tool("generate_image", gen_params)
             task_id = parse_task_id(result)
             data = poll_task(task_id, interval=10, max_wait=600)
@@ -459,4 +417,4 @@ def generate_quest_atlases(script, img_dir, tts_thread):
             print(f"    [QuestAtlas] ERROR {char_key}: {e}")
 
     print(f"  [QuestAtlas] Done — 4 characters × 8 poses = 32 pose images.")
-    return ref_urls
+    return {}
