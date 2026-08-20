@@ -16,12 +16,29 @@ SENSENOVA_BASE = os.environ.get("SENSENOVA_BASE", "https://token.sensenova.cn/v1
 SENSENOVA_API_KEY = os.environ.get("SENSENOVA_API_KEY", "")
 SENSENOVA_MODEL = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
 
+# Rate limiting: enforce minimum interval between LLM API calls to avoid HTTP 429.
+# glm-5.2 is especially aggressive about "request rate increased too quickly".
+_LAST_CALL_TIME = 0.0
+_MIN_CALL_INTERVAL = float(os.environ.get("LLM_MIN_INTERVAL", "3.0"))
+
+
+def _enforce_rate_limit():
+    """Sleep if the previous LLM call was too recent."""
+    import time as _time
+    global _LAST_CALL_TIME
+    elapsed = _time.time() - _LAST_CALL_TIME
+    if elapsed < _MIN_CALL_INTERVAL:
+        wait = _MIN_CALL_INTERVAL - elapsed
+        _time.sleep(wait)
+    _LAST_CALL_TIME = _time.time()
+
 
 def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
           max_tokens: int = 8192, reasoning_effort: str = "low") -> str:
     """Call SenseNova LLM chat completion, return content string.
 
     Retries on HTTP 429 (rate limit) with exponential backoff.
+    Enforces a minimum interval between calls to avoid triggering rate limits.
     reasoning_effort: "low" (fast, less thinking) or "medium" (more reasoning).
     """
     import time as _time
@@ -31,10 +48,11 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
     api_key = os.environ.get("SENSENOVA_API_KEY", "")
     base_url = os.environ.get("SENSENOVA_BASE", "https://token.sensenova.cn/v1")
 
-    # 429 rate-limit retry: backoff 30s, 60s, 90s, 120s, 150s
-    _429_BACKOFFS = [30, 60, 90, 120, 150]
+    # 429 rate-limit retry: shorter backoffs for first 2, then escalate
+    _429_BACKOFFS = [15, 30, 60, 90, 120]
 
     for _429_attempt in range(len(_429_BACKOFFS) + 1):
+        _enforce_rate_limit()
         body = {
             "model": model,
             "messages": messages,

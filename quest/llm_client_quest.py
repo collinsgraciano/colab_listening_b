@@ -294,17 +294,53 @@ def generate_quest_script(topic: str, cefr: str = "A1",
     # ── Round 4: Per-line enhancement ───────────────────────────────────
     print("  [LLM] Round 4: Per-line enhancement...")
     enhance_prompt = _build_enhance_prompt(all_dialogue, outline)
-    enhanced = _chat_and_parse(
-        enhance_prompt, temperature=0.3, max_tokens=8192, reasoning_effort="low",
-        label="enhance")
+    try:
+        enhanced = _chat_and_parse(
+            enhance_prompt, temperature=0.3, max_tokens=8192, reasoning_effort="low",
+            label="enhance")
+    except RuntimeError as e:
+        print(f"  [LLM] Round 4 failed ({e}), skipping enhancement")
+        enhanced = []
 
-    # Merge enhanced fields into dialogue
-    if isinstance(enhanced, list) and len(enhanced) == len(all_dialogue):
-        for i, enh in enumerate(enhanced):
-            all_dialogue[i].setdefault("phonetic", enh.get("phonetic", ""))
-            all_dialogue[i].setdefault("zh", enh.get("zh", ""))
-            all_dialogue[i].setdefault("on_screen", enh.get("on_screen", [all_dialogue[i].get("speaker", "char_a")]))
-            all_dialogue[i].setdefault("image_prompt", enh.get("image_prompt", ""))
+    # Merge enhanced fields into dialogue — direct assignment, not setdefault,
+    # so Round 4 can override empty/placeholder values from earlier rounds.
+    if isinstance(enhanced, list):
+        # Build index from enhanced items (match by 'i' field, or by position)
+        enh_by_idx = {}
+        for enh in enhanced:
+            if isinstance(enh, dict):
+                idx = enh.get("i", -1)
+                if idx >= 0:
+                    enh_by_idx[idx] = enh
+        # Fallback: if no 'i' fields, match by position
+        if not enh_by_idx and len(enhanced) == len(all_dialogue):
+            enh_by_idx = {i: e for i, e in enumerate(enhanced)}
+
+        for i, line in enumerate(all_dialogue):
+            enh = enh_by_idx.get(i)
+            if not enh:
+                continue
+            zh = enh.get("zh", "").strip()
+            if zh:
+                line["zh"] = zh
+            phonetic = enh.get("phonetic", "").strip()
+            if phonetic:
+                line["phonetic"] = phonetic
+            on_screen = enh.get("on_screen")
+            if on_screen is not None:
+                line["on_screen"] = on_screen
+            img = enh.get("image_prompt", "").strip()
+            if img:
+                line["image_prompt"] = img
+
+    # ── Fallback: fill any still-empty zh via a small targeted call ─────
+    empty_zh = [(i, d.get("text", "")) for i, d in enumerate(all_dialogue)
+                if not d.get("zh", "").strip()]
+    if empty_zh:
+        print(f"  [LLM] {len(empty_zh)} lines have empty zh, generating fallback translations...")
+        zh_map = _batch_translate_zh(empty_zh)
+        for i, zh in zh_map.items():
+            all_dialogue[i]["zh"] = zh
 
     # ── Assemble final script ──────────────────────────────────────────
     script = {
@@ -373,6 +409,58 @@ def generate_quest_script(topic: str, cefr: str = "A1",
 # ---------------------------------------------------------------------------
 # Helper: chat + extract JSON with retry
 # ---------------------------------------------------------------------------
+
+def _batch_translate_zh(lines: list[tuple[int, str]]) -> dict[int, str]:
+    """Translate English dialogue lines to Traditional Chinese in one batch call.
+
+    Args:
+        lines: list of (index, english_text) for lines missing zh translation.
+    Returns:
+        dict mapping index -> Traditional Chinese translation.
+    """
+    if not lines:
+        return {}
+    import json as _json
+    items = [{"i": i, "text": text} for i, text in lines]
+    prompt = f"""Translate each English sentence to Traditional Chinese (繁體中文).
+Return a JSON array, same length and order, each item with "i" and "zh":
+{_json.dumps(items, ensure_ascii=False)}
+
+Output: [{{"i": 0, "zh": "繁中翻譯"}}, ...]
+JSON array ONLY, no markdown."""
+
+    try:
+        result = _chat_and_parse(
+            prompt, temperature=0.3, max_tokens=4096, reasoning_effort="low",
+            label="fallback_zh")
+    except RuntimeError as e:
+        print(f"  [LLM] Fallback zh translation failed: {e}")
+        return {}
+
+    zh_map = {}
+    if isinstance(result, list):
+        for item in result:
+            if isinstance(item, dict):
+                idx = item.get("i", -1)
+                zh = item.get("zh", "").strip()
+                if idx >= 0 and zh:
+                    zh_map[idx] = zh
+    elif isinstance(result, dict):
+        # Single dict with index->zh mapping
+        for idx_str, zh in result.items():
+            try:
+                idx = int(idx_str)
+                if zh.strip():
+                    zh_map[idx] = zh.strip()
+            except (ValueError, TypeError):
+                continue
+
+    # For any still-missing translations, use a simple English->placeholder
+    for i, _ in lines:
+        if i not in zh_map:
+            zh_map[i] = "（翻譯待補）"
+    return zh_map
+
 
 def _chat_and_parse(prompt: str, temperature: float = 0.8, max_tokens: int = 8192,
                     reasoning_effort: str = "low", label: str = "") -> dict:
@@ -512,8 +600,9 @@ RULES:
 - {rules}
 
 Output: JSON array of exactly {n_lines} objects:
-[{{"speaker": "char_a"|"char_b"|"char_c", "text": "English sentence", "phase": "{phase}", "emotion": "happy|curious|surprised|excited|calm|confused"}}]
+[{{"speaker": "char_a"|"char_b"|"char_c", "text": "English sentence", "phase": "{phase}", "zh": "繁體中文翻譯", "emotion": "happy|curious|surprised|excited|calm|confused"}}]
 
+Every line MUST include "zh": a Traditional Chinese (繁體中文) translation of the English text.
 NO markdown, NO explanation. JSON array ONLY."""
 
     result = _chat_and_parse(
