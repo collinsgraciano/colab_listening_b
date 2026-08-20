@@ -79,6 +79,8 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
         )
         req.add_header("Authorization", f"Bearer {api_key}")
         req.add_header("Content-Type", "application/json")
+        # Cloudflare-protected endpoints (e.g. x666.me) block default Python User-Agent with 403
+        req.add_header("User-Agent", "CodelyLLM/1.0")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode("utf-8")
