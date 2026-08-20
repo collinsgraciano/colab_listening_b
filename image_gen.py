@@ -403,14 +403,20 @@ def generate_quest_atlases(script, img_dir, tts_thread):
             data = poll_task(task_id, interval=10, max_wait=600)
             url = data.get("url", "")
             if not url:
-                # Debug: dump all keys from poll_task response
-                print(f"    [QuestAtlas] DEBUG {char_key} keys={list(data.keys())}")
-                print(f"    [QuestAtlas] DEBUG {char_key} status={data.get('status','')}")
-                print(f"    [QuestAtlas] DEBUG {char_key} error={data.get('error','')}")
+                # Debug: parse raw_json and print only output.data section
+                import json as _json
                 raw = data.get("raw_json", "")
-                if not raw:
-                    raw = data.get("raw_text", "")
-                print(f"    [QuestAtlas] DEBUG {char_key} raw={str(raw)[:800]}")
+                if raw:
+                    try:
+                        rj = _json.loads(raw)
+                        out = rj.get("output") or {}
+                        d = out.get("data") or {}
+                        print(f"    [QuestAtlas] DEBUG {char_key} output.data keys={list(d.keys())}")
+                        print(f"    [QuestAtlas] DEBUG {char_key} output.data={_json.dumps(d, ensure_ascii=False)[:600]}")
+                        res = d.get("result") or {}
+                        print(f"    [QuestAtlas] DEBUG {char_key} result={_json.dumps(res, ensure_ascii=False)[:400]}")
+                    except Exception:
+                        pass
                 print(f"    [QuestAtlas] WARNING: No URL for {char_key}")
                 continue
             download_file(url, atlas_path)
