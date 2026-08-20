@@ -85,9 +85,8 @@ def generate_images(image_prompts, img_dir, tts_thread):
         try:
             result = call_tool("generate_image", {
                 "prompt": prompt,
-                "provider": "frontier",
-                "quality": "high",
-                "image_size": {"width": 1280, "height": 720},
+                "provider": "seedream",
+                "image_size": "landscape_16_9",
                 "output_format": "png",
             })
             task_id = parse_task_id(result)
