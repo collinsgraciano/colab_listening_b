@@ -181,6 +181,7 @@ def _parse_args() -> argparse.Namespace:
                         help="Dialogue animation for --structure image: 'none' (static), 'landing' (landing transform), 'stop_motion' (multi-pose + optical flow). Default: landing")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
     parser.add_argument("--no-4k", dest="no_4k", action="store_true", help="Skip the final 4K upscaling step")
+    parser.add_argument("--no-zh-subtitle", dest="no_zh_subtitle", action="store_true", help="Hide Chinese subtitles (default: show ZH subtitles)")
     parser.add_argument("--tts-rate", default=None, help="Override dialogue English TTS rate (e.g. '-15%%', '0%%'). Default: mode-dependent (quest '0%%', others '-15%%')")
     parser.add_argument("--upscale-timeout", type=int, default=3600, help="Timeout in seconds for 4K upscale (default 3600)")
     return parser.parse_args()
@@ -672,6 +673,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             scene_img=scene_img,
             srt_dir=str(sub_dir),
             pad=args.pad,
+            show_zh=not getattr(args, "no_zh_subtitle", False),
             progress_cb=progress_cb,
         )
     elif args.structure == "image":

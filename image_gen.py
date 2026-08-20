@@ -359,7 +359,7 @@ def generate_quest_atlases(script, img_dir, tts_thread):
             f"no props, no objects, no scene, no text"
         )
         grid_w, grid_h = 4, 2
-        img_size = {"width": 2560, "height": 1280}
+        img_size = {"width": 5120, "height": 2560}
 
         print(f"  [QuestAtlas] Generating {grid_w}×{grid_h} atlas for {char_key} ({n_poses} poses)...")
         try:

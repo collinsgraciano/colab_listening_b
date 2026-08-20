@@ -172,6 +172,8 @@ def generate_quest_script(topic: str, cefr: str = "A1",
             continue
         on_screen = enh.get("on_screen")
         if on_screen is not None:
+            if isinstance(on_screen, list) and len(on_screen) == 0:
+                on_screen = [line.get("speaker", "char_a")]
             line["on_screen"] = on_screen
 
     # ── Fallback: fill any still-empty zh via a small targeted call ─────
@@ -234,6 +236,8 @@ def generate_quest_script(topic: str, cefr: str = "A1",
         line.setdefault("zh", "")
         line.setdefault("image_prompt", "")
         line.setdefault("on_screen", [line.get("speaker", "char_a")])
+        if not line.get("on_screen"):
+            line["on_screen"] = [line.get("speaker", "char_a")]
         if not line.get("phase"):
             if i < n_buildup:
                 line["phase"] = "buildup"

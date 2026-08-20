@@ -522,6 +522,7 @@ def compose_quest(
     host_bg: str | None = None,
     scene_bg_list: list[str] | None = None,
     render_fps: int = 12,
+    show_zh: bool = True,
     progress_cb=None,
 ) -> str:
     """Compose the final quest video — stop-motion with multi-character + multi-scene.
@@ -700,7 +701,7 @@ def compose_quest(
 
     # --- Burn subtitles via Pillow overlay (dialogue entries only) ---
     _cb(90, "Burning subtitles (Pillow overlay)...")
-    final_path = burn_subtitles(no_sub, timeline, script, str(work), srt_dir, pad, _cb)
+    final_path = burn_subtitles(no_sub, timeline, script, str(work), srt_dir, pad, _cb, show_zh=show_zh)
 
     shutil.rmtree(tmp_dir, ignore_errors=True)
 

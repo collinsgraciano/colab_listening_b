@@ -219,7 +219,7 @@ def concat_segments(segment_paths: list[str], output_path: str,
 
 def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
                    work_dir: str, srt_dir: str, pad: float = 0.4,
-                   progress_cb=None,
+                   progress_cb=None, show_zh: bool = True,
                    subtitle_seg_types: tuple[str, ...] = ("dialogue", "welcome", "hook_intro", "outro")) -> str:
     """Render dialogue subtitles via Pillow and burn them onto the video.
 
@@ -241,6 +241,68 @@ def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
 
     # Extract subtitle entries from timeline
     import re as _re
+
+    def _split_subtitles(en: str, zh: str, audio_d: float, t_start: float):
+        """Split long narration into per-sentence subtitle entries.
+
+        First splits by sentence-ending punctuation, then further splits
+        very long sentences by commas/semicolons so text doesn't cram.
+        Returns list of subtitle entry dicts.
+        """
+        EN_MAX_CHARS = 80
+        EN_MAX_WORDS = 12
+        ZH_MAX_CHARS = 30
+
+        def _further_split_en(text: str) -> list[str]:
+            """Split EN by [.!?] first, then by [,;] if still too long."""
+            parts = _re.split(r'(?<=[.!?])\s+', text.strip())
+            result = []
+            for p in parts:
+                p = p.strip()
+                if not p:
+                    continue
+                if len(p) > EN_MAX_CHARS or len(p.split()) > EN_MAX_WORDS:
+                    sub_parts = _re.split(r'(?<=[,;])\s+', p)
+                    result.extend(s.strip() for s in sub_parts if s.strip())
+                else:
+                    result.append(p)
+            return result if result else [text.strip()]
+
+        def _further_split_zh(text: str) -> list[str]:
+            """Split ZH by [。！？] first, then by [，；] if still too long."""
+            parts = _re.split(r'(?<=[。！？])\s*', text.strip())
+            result = []
+            for p in parts:
+                p = p.strip()
+                if not p:
+                    continue
+                if len(p) > ZH_MAX_CHARS:
+                    sub_parts = _re.split(r'(?<=[，；])\s*', p)
+                    result.extend(s.strip() for s in sub_parts if s.strip())
+                else:
+                    result.append(p)
+            return result if result else [text.strip()]
+
+        en_parts = _further_split_en(en) if en else []
+        zh_parts = _further_split_zh(zh) if zh else []
+        n = max(len(en_parts), len(zh_parts), 1)
+        total_chars = sum(len(s) for s in en_parts) or 1
+        entries = []
+        cursor = t_start
+        for i in range(n):
+            sent_en = en_parts[i] if i < len(en_parts) else ""
+            sent_zh = zh_parts[i] if i < len(zh_parts) else ""
+            sent_frac = (len(sent_en) if sent_en else len(sent_zh) or 1) / total_chars
+            sent_dur = audio_d * sent_frac if i < n - 1 else audio_d - (cursor - t_start)
+            entries.append({
+                "start": cursor,
+                "end": cursor + sent_dur,
+                "en": sent_en,
+                "zh": sent_zh,
+            })
+            cursor += sent_dur
+        return entries
+
     subtitle_entries = []
     t_cursor = 0.0
     for seg in timeline:
@@ -251,32 +313,9 @@ def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
             zh = seg.get("subtitle_zh", "")
             audio_d = seg.get("audio_dur", dur - pad)
             if en or zh:
-                # Split long narration into sentence-level subtitles
-                sentences = _re.split(r'(?<=[.!?])\s+', en.strip())
-                if len(sentences) > 1:
-                    # Distribute sentences evenly across the segment's audio duration
-                    total_chars = sum(len(s) for s in sentences)
-                    sent_start = t_cursor
-                    for si, sent in enumerate(sentences):
-                        sent_frac = len(sent) / max(total_chars, 1)
-                        sent_dur = audio_d * sent_frac
-                        # Try to find matching ZH sentence (split by 。！？)
-                        zh_sentences = _re.split(r'(?<=[。！？])\s*', zh.strip()) if zh else []
-                        sent_zh = zh_sentences[si] if si < len(zh_sentences) else ""
-                        subtitle_entries.append({
-                            "start": sent_start,
-                            "end": sent_start + sent_dur,
-                            "en": sent.strip(),
-                            "zh": sent_zh.strip(),
-                        })
-                        sent_start += sent_dur
-                else:
-                    subtitle_entries.append({
-                        "start": t_cursor,
-                        "end": t_cursor + audio_d,
-                        "en": en,
-                        "zh": zh,
-                    })
+                subtitle_entries.extend(
+                    _split_subtitles(en, zh, audio_d, t_cursor)
+                )
         t_cursor += dur
 
     if not subtitle_entries:
@@ -297,7 +336,7 @@ def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
         draw = ImageDraw.Draw(bg)
 
         en_text = entry["en"]
-        zh_text = entry["zh"]
+        zh_text = entry["zh"] if show_zh else ""
 
         en_font = en_w = en_h = None
         if en_text:
