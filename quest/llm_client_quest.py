@@ -342,6 +342,15 @@ def generate_quest_script(topic: str, cefr: str = "A1",
         for i, zh in zh_map.items():
             all_dialogue[i]["zh"] = zh
 
+    # ── Fallback: fill any still-empty phonetic via a small targeted call ─
+    empty_phonetic = [(i, d.get("text", "")) for i, d in enumerate(all_dialogue)
+                      if not d.get("phonetic", "").strip()]
+    if empty_phonetic:
+        print(f"  [LLM] {len(empty_phonetic)} lines have empty phonetic, generating fallback...")
+        phon_map = _batch_phonetic(empty_phonetic)
+        for i, phon in phon_map.items():
+            all_dialogue[i]["phonetic"] = phon
+
     # ── Assemble final script ──────────────────────────────────────────
     script = {
         "lesson_type": "listening",
@@ -410,6 +419,43 @@ def generate_quest_script(topic: str, cefr: str = "A1",
 # Helper: chat + extract JSON with retry
 # ---------------------------------------------------------------------------
 
+def _batch_phonetic(lines: list[tuple[int, str]]) -> dict[int, str]:
+    """Generate IPA phonetic transcription for dialogue lines in one batch call."""
+    if not lines:
+        return {}
+    import json as _json
+    items = [{"i": i, "text": text} for i, text in lines]
+    prompt = f"""Write IPA phonetic transcription for each English sentence.
+Use proper IPA symbols in /slashes/.
+Return a JSON array, same length and order, each item with "i" and "phonetic":
+{_json.dumps(items, ensure_ascii=False)}
+
+Output: [{{"i": 0, "phonetic": "/.../"}}]
+JSON array ONLY."""
+
+    try:
+        result = _chat_and_parse(
+            prompt, temperature=0.3, max_tokens=4096, reasoning_effort="low",
+            label="fallback_phonetic")
+    except RuntimeError as e:
+        print(f"  [LLM] Fallback phonetic failed: {e}")
+        return {}
+
+    phon_map = {}
+    if isinstance(result, list):
+        for item in result:
+            if isinstance(item, dict):
+                idx = item.get("i", -1)
+                phon = item.get("phonetic", "").strip()
+                if idx >= 0 and phon:
+                    phon_map[idx] = phon
+
+    for i, _ in lines:
+        if i not in phon_map:
+            phon_map[i] = "/"  # minimal placeholder to pass validation
+    return phon_map
+
+
 def _batch_translate_zh(lines: list[tuple[int, str]]) -> dict[int, str]:
     """Translate English dialogue lines to Traditional Chinese in one batch call.
 
@@ -464,11 +510,15 @@ JSON array ONLY, no markdown."""
 
 def _chat_and_parse(prompt: str, temperature: float = 0.8, max_tokens: int = 8192,
                     reasoning_effort: str = "low", label: str = "") -> dict:
-    """Call _chat, extract JSON, retry up to 3 times."""
+    """Call _chat, extract JSON, retry on failure.
+
+    Retry count is configurable via LLM_RETRIES env var (default 10).
+    """
     import json
     import time
     last_error = None
-    for attempt in range(3):
+    max_retries = int(os.environ.get("LLM_RETRIES", "10"))
+    for attempt in range(max_retries):
         try:
             content = _chat(
                 [{"role": "user", "content": prompt}],
@@ -479,10 +529,10 @@ def _chat_and_parse(prompt: str, temperature: float = 0.8, max_tokens: int = 819
             return _extract_json(content)
         except (json.JSONDecodeError, RuntimeError) as e:
             last_error = e
-            print(f"  [LLM {label} retry {attempt+1}/3] {type(e).__name__}: {str(e)[:200]}")
-            if attempt < 2:
+            print(f"  [LLM {label} retry {attempt+1}/{max_retries}] {type(e).__name__}: {str(e)[:200]}")
+            if attempt < max_retries - 1:
                 time.sleep(5)
-    raise RuntimeError(f"LLM {label} failed after 3 retries: {last_error}")
+    raise RuntimeError(f"LLM {label} failed after {max_retries} retries: {last_error}")
 
 
 # ---------------------------------------------------------------------------

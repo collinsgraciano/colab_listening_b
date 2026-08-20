@@ -173,6 +173,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--openai-base-url", default=None, help="OpenAI-compatible API base URL (default: https://x666.me/v1)")
     parser.add_argument("--openai-api-key", default=None, help="OpenAI-compatible API key (or set OPENAI_API_KEY env var)")
     parser.add_argument("--openai-model", default=None, help="OpenAI-compatible model name (default: grok-4.6). Available: grok-4.6, grok-4.5, gemini-3.1-pro-preview, gemini-3.7-flash, claude-sonnet-5, gemini-2.5-pro-1m")
+    parser.add_argument("--llm-retries", type=int, default=10, help="Max retries per LLM round (default 10). Set higher for unreliable endpoints.")
     parser.add_argument("--structure", default="original", choices=["original", "static", "static_animated", "stop_motion", "quest"],
                         help="Video structure: 'original' (4-chapter, video clips), 'static' (all images), 'static_animated' (static + landing transform), 'stop_motion' (multi-pose + optical flow), or 'quest' (task-hook listening)")
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
@@ -755,6 +756,8 @@ def main():
         args.num_lines = 48 if args.structure == "quest" else 18
     if args.pad is None:
         args.pad = 0.4
+
+    os.environ["LLM_RETRIES"] = str(args.llm_retries)
 
     if args.llm_provider == "openai":
         os.environ["LLM_PROVIDER"] = "openai"

@@ -57,10 +57,11 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
         api_key = os.environ.get("SENSENOVA_API_KEY", "")
         base_url = os.environ.get("SENSENOVA_BASE", "https://token.sensenova.cn/v1")
 
-    # 429 rate-limit retry: shorter backoffs for first 2, then escalate
-    _429_BACKOFFS = [15, 30, 60, 90, 120]
+    # Retry on 429 (rate limit) and 524 (Cloudflare gateway timeout)
+    _RETRY_CODES = [429, 524]
+    _RETRY_BACKOFFS = [15, 30, 60, 90, 120]
 
-    for _429_attempt in range(len(_429_BACKOFFS) + 1):
+    for _retry_attempt in range(len(_RETRY_BACKOFFS) + 1):
         _enforce_rate_limit()
         body = {
             "model": model,
@@ -101,10 +102,11 @@ def _chat(messages: list[dict], temperature: float = 0.8, timeout: int = 180,
                 return content
         except urllib.error.HTTPError as e:
             err = e.read().decode("utf-8", errors="replace")
-            if e.code == 429 and _429_attempt < len(_429_BACKOFFS):
-                wait = _429_BACKOFFS[_429_attempt]
-                print(f"  [LLM] HTTP 429 rate limited, waiting {wait}s before retry "
-                      f"({_429_attempt+1}/{len(_429_BACKOFFS)})... "
+            if e.code in _RETRY_CODES and _retry_attempt < len(_RETRY_BACKOFFS):
+                wait = _RETRY_BACKOFFS[_retry_attempt]
+                print(f"  [LLM] HTTP {e.code} ({'rate limited' if e.code == 429 else 'gateway timeout'}), "
+                      f"waiting {wait}s before retry "
+                      f"({_retry_attempt+1}/{len(_RETRY_BACKOFFS)})... "
                       f"Model: {model}")
                 _time.sleep(wait)
                 continue
