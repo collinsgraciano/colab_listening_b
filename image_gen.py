@@ -16,6 +16,8 @@ def check_step2_resume(checkpoint, script, dirs, n, is_quest, is_stop_motion=Fal
     step2_done = step_done(checkpoint, "step2_images_tts")
     char_scene_file = img_dir / "char_scene.png"
     scene_file = img_dir / "scene.png"
+    # Quest mode uses char_a_ref.png instead of char_scene.png
+    ref_file = img_dir / "char_a_ref.png" if is_quest else char_scene_file
     all_audio_exist = all((audio_dir / f"dialogue_{i}.mp3").exists() for i in range(n))
     if is_quest:
         all_zh_exist = True
@@ -38,13 +40,14 @@ def check_step2_resume(checkpoint, script, dirs, n, is_quest, is_stop_motion=Fal
     else:
         all_pose_imgs_exist = True
 
-    if not (step2_done and char_scene_file.exists() and scene_file.exists()
+    if not (step2_done and ref_file.exists() and scene_file.exists()
             and all_audio_exist and all_zh_exist
             and narration_exist and all_dialogue_imgs_exist and all_pose_imgs_exist):
         return None
 
     print("  [Resume] Step 2 already done, loading existing images + audio...")
-    reupload_files = ["char_scene.png", "scene.png"]
+    # Quest mode re-uploads char_a_ref.png; others re-upload char_scene.png
+    reupload_files = ["char_a_ref.png", "scene.png"] if is_quest else ["char_scene.png", "scene.png"]
     image_urls = {}
     for filename in reupload_files:
         filepath = str(img_dir / filename)
@@ -456,3 +459,4 @@ def generate_quest_atlases(script, img_dir, tts_thread):
             print(f"    [QuestAtlas] ERROR {char_key}: {e}")
 
     print(f"  [QuestAtlas] Done — 4 characters × 8 poses = 32 pose images.")
+    return ref_urls

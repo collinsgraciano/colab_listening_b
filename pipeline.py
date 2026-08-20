@@ -317,10 +317,12 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
 
     _QUEST_STYLE = "3D cartoon style, Pixar-like, warm soft lighting, cel-shaded, vibrant saturated colors, smooth surfaces"
 
-    image_prompts = [
-        (f"Character design sheet, {char_a_desc} on the left, {char_b_desc} on the right, plain white background, full body, front view, {_QUEST_STYLE}, no text, no background, 16:9", "char_scene.png"),
-        (f"Scene background, {scene}, wide shot, showing all key elements of the scene, {_QUEST_STYLE}, no characters, no text, 16:9", "scene.png"),
-    ]
+    image_prompts = []
+    if not is_quest:
+        image_prompts.append(
+            (f"Character design sheet, {char_a_desc} on the left, {char_b_desc} on the right, plain white background, full body, front view, {_QUEST_STYLE}, no text, no background, 16:9", "char_scene.png"))
+    image_prompts.append(
+        (f"Scene background, {scene}, wide shot, showing all key elements of the scene, {_QUEST_STYLE}, no characters, no text, 16:9", "scene.png"))
     if is_stop_motion:
         # Per-character three-view reference sheets for pose consistency
         image_prompts.append(
@@ -366,7 +368,8 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
             char_scene_cdn = image_urls.get("char_scene.png", "")
             if is_quest:
                 # Quest uses per-character atlas (4 chars × 8 poses)
-                _generate_quest_atlases(script, img_dir, tts_thread)
+                ref_urls = _generate_quest_atlases(script, img_dir, tts_thread)
+                image_urls.update(ref_urls)
             else:
                 _generate_dialogue_images(
                     dialogue, img_dir, char_a_desc, char_b_desc, scene,
@@ -560,7 +563,11 @@ def _step45_thumbnail(args, checkpoint: dict, script: dict, work_dir: Path,
     if _step_done(checkpoint, "step4.5_thumbnail") and os.path.exists(thumb_path) and os.path.exists(yt_meta_path):
         print("  [Resume] Thumbnail + YouTube metadata already exist, skipping...")
         return
-    char_scene_cdn = ctx["image_urls"].get("char_scene.png", "")
+    # Quest mode uses char_a_ref.png; others use char_scene.png
+    if args.structure == "quest":
+        char_scene_cdn = ctx["image_urls"].get("char_a_ref.png", "")
+    else:
+        char_scene_cdn = ctx["image_urls"].get("char_scene.png", "")
     generate_thumbnail(
         script=script,
         scene_img=scene_img_full,
