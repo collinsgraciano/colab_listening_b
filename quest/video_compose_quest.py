@@ -273,6 +273,7 @@ def _render_sm_segment(
     duration: float,
     frames_dir: Path,
     cache_dir: Path,
+    render_fps: int = 12,
     overlay_path: str | None = None,
     seed: int = 0,
     direction: int = 1,
@@ -293,7 +294,7 @@ def _render_sm_segment(
     """
     from stop_motion import (
         remove_bg, normalize_pose, render_frame,
-        compute_landing, POSE_CENTER_Y, DELIVERY_FPS,
+        compute_landing, POSE_CENTER_Y,
     )
     from PIL import Image as PILImage
 
@@ -346,13 +347,13 @@ def _render_sm_segment(
                 positions.append(1280 * 0.65)
 
     # Build pose schedule for each character layer
-    total_frames = max(1, round(duration * DELIVERY_FPS))
+    total_frames = max(1, round(duration * render_fps))
     rng = random.Random(seed)
     schedules = []
     for i, layer in enumerate(processed_layers):
         af = audio_file if layer["is_speaker"] else None
         s = _build_pose_schedule(
-            len(layer["poses"]), total_frames, DELIVERY_FPS,
+            len(layer["poses"]), total_frames, render_fps,
             seed + i * 100, is_speaker=layer["is_speaker"],
             audio_file=af)
         schedules.append(s)
@@ -390,7 +391,7 @@ def _render_sm_segment(
     cy = POSE_CENTER_Y
 
     for fidx in range(total_frames):
-        t = fidx / DELIVERY_FPS
+        t = fidx / render_fps
         canvas = bg_img.copy()
 
         for li, layer in enumerate(processed_layers):
@@ -408,7 +409,7 @@ def _render_sm_segment(
 
             pose_idx = schedule[stage_idx][0]
             stage_start_frame = schedule[stage_idx][1]
-            local_t = (fidx - stage_start_frame) / DELIVERY_FPS
+            local_t = (fidx - stage_start_frame) / render_fps
 
             # Check if we're in a morph transition (near end of current stage)
             in_morph = False
@@ -416,7 +417,7 @@ def _render_sm_segment(
                     and stage_idx in morph_cache[li]):
                 next_start = schedule[stage_idx + 1][1]
                 frames_to_next = next_start - fidx
-                morph_frames_needed = round(MORPH_DUR * DELIVERY_FPS)
+                morph_frames_needed = round(MORPH_DUR * render_fps)
                 if frames_to_next <= morph_frames_needed and frames_to_next > 0:
                     morph_frames = morph_cache[li][stage_idx]
                     morph_progress = 1.0 - (frames_to_next / morph_frames_needed)
@@ -476,19 +477,19 @@ def _render_sm_segment(
 
     if audio_file and os.path.exists(audio_file):
         cmd = ["ffmpeg", "-y",
-               "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
+               "-framerate", str(render_fps), "-i", frame_pattern,
                "-i", audio_file,
                "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(render_fps),
                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                "-af", f"{fade_af},apad=whole_dur={duration:.3f}",
                out_path]
     else:
         cmd = ["ffmpeg", "-y",
-               "-framerate", str(DELIVERY_FPS), "-i", frame_pattern,
+               "-framerate", str(render_fps), "-i", frame_pattern,
                "-f", "lavfi", "-i", "anullsrc=stereo:44100",
                "-t", f"{duration:.3f}", "-map", "0:v:0", "-map", "1:a:0",
-               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(DELIVERY_FPS),
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-r", str(render_fps),
                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                out_path]
 
@@ -520,6 +521,7 @@ def compose_quest(
     char_pose_map: dict[str, list[str]] | None = None,
     host_bg: str | None = None,
     scene_bg_list: list[str] | None = None,
+    render_fps: int = 12,
     progress_cb=None,
 ) -> str:
     """Compose the final quest video — stop-motion with multi-character + multi-scene.
@@ -592,6 +594,7 @@ def compose_quest(
             success = _render_sm_segment(
                 char_layers, host_bg_path, audio_file, out_path, duration,
                 frames_dir, cache_dir,
+                render_fps=render_fps,
                 overlay_path=None,
                 seed=hash(seg_type) % 1000 + seg_idx,
                 direction=direction, fade_af=fade_af,
@@ -599,7 +602,7 @@ def compose_quest(
             if not success:
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", host_bg_path,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                       "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps=24",
+                       "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
                        "-map", "0:v:0", "-map", "1:a:0",
                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -638,6 +641,7 @@ def compose_quest(
             success = _render_sm_segment(
                 char_layers, line_bg, audio_file, out_path, duration,
                 frames_dir, cache_dir,
+                render_fps=render_fps,
                 overlay_path=None,
                 seed=audio_idx * 7 + 13,
                 direction=direction, fade_af=fade_af,
@@ -645,7 +649,7 @@ def compose_quest(
             if not success:
                 cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                       "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps=24",
+                       "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
                        "-map", "0:v:0", "-map", "1:a:0",
                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -654,7 +658,7 @@ def compose_quest(
             # Unknown segment type — silent static placeholder keeps timeline intact
             cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                    "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                   "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps=24",
+                   "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
                    "-map", "0:v:0", "-map", "1:a:0",
                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
                    "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -671,7 +675,7 @@ def compose_quest(
                 print(f"  FFmpeg error seg {seg_idx}: {r.stderr[-200:] if r else 'timeout'}")
                 fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
                                 "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                                "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps=24",
+                                "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
                                 "-map", "0:v:0", "-map", "1:a:0",
                                 "-c:v", "libx264", "-pix_fmt", "yuv420p",
                                 "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
@@ -686,7 +690,8 @@ def compose_quest(
                     continue
         segments.append(out_path)
         _cb(int(seg_idx / total_segs * 80),
-            f"  Segment {seg_idx}/{total_segs} ({seg_type})")
+            f"  Segment {seg_idx}/{total_segs} ({seg_type}) done")
+        print(f"  Segment {seg_idx}/{total_segs} ({seg_type}) done")
 
     # --- Concat all segments ---
     _cb(80, "Concatenating segments...")

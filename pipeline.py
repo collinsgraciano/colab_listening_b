@@ -159,6 +159,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--clip-duration", type=int, default=15, help="Video clip duration in seconds")
     parser.add_argument("--practice-duration", type=float, default=3.0, help="Silence duration in Ch3")
     parser.add_argument("--pad", type=float, default=None, help="Audio pad between segments (default 0.4; quest mode 5.0 — long thinking pauses for beginners)")
+    parser.add_argument("--render-fps", type=int, default=12, help="Quest stop-motion render framerate (default 12; lower=faster but choppier)")
     parser.add_argument("--lessons-dir", default=None, help="Lessons dir for anti-duplicate check")
     parser.add_argument("--topics-file", default=str(Path(__file__).parent / "topics.json"), help="Path to topics.json")
     parser.add_argument("--used-topics-file", default=None, help="Path to used_topics.json (default: <output>/used_topics.json — persists on Drive across Colab sessions)")
@@ -663,6 +664,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             host_poses=host_poses,
             host_bg=host_bg,
             scene_bg_list=scene_bg_list,
+            render_fps=getattr(args, "render_fps", 12),
             timeline=timeline,
             script=script,
             narration=narration,
