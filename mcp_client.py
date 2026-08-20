@@ -239,13 +239,19 @@ def poll_task(task_id, interval=40, max_wait=600):
                     elif data.get("message") and res_json.get("status") == "failed":
                         task_data["error"] = data["message"]
                     result_obj = data.get("result") or {}
-                    url = result_obj.get("video_url", "") or result_obj.get("image_url", "")
+                    url = (result_obj.get("video_url") or result_obj.get("image_url") or
+                           result_obj.get("url") or "")
                     if url:
                         task_data["url"] = url
                     if "url" not in task_data:
-                        img_urls = data.get("imageUrls") or []
+                        img_urls = data.get("imageUrls") or data.get("image_urls") or []
                         if img_urls and isinstance(img_urls, list) and img_urls[0]:
                             task_data["url"] = img_urls[0]
+                    if "url" not in task_data:
+                        # Fallback: check data directly for url field
+                        url = data.get("url") or data.get("imageUrl") or ""
+                        if url:
+                            task_data["url"] = url
                     break
                 except json.JSONDecodeError:
                     pass
