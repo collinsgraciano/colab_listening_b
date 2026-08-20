@@ -117,7 +117,7 @@ def safe_filename(yt_title: str, fallback: str = "final_video") -> str:
     Consolidates pipeline._safe_dirname and video_compose inline _re.sub.
     """
     name = re.sub(r'[\U0001F000-\U0001FFFF]', '', yt_title)  # remove emoji
-    name = re.sub(r'[\\/:*?"<>|]', '', name).strip()
+    name = re.sub(r"[\\/:*?\"'<>|]", '', name).strip()  # ' breaks FFmpeg concat demuxer
     name = re.sub(r'\s+', '_', name)[:80]
     if not name:
         name = re.sub(r'[^\w\s-]', '', fallback).strip().replace(' ', '_')
@@ -199,7 +199,8 @@ def concat_segments(segment_paths: list[str], output_path: str,
     concat_list = tmp_dir / "concat.txt"
     with open(concat_list, "w", encoding="utf-8") as f:
         for s in segment_paths:
-            f.write(f"file '{Path(s).resolve()}'\n")
+            p = str(Path(s).resolve()).replace("'", "'\\''")
+            f.write(f"file '{p}'\n")
 
     result = subprocess.run([
         "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_list),
