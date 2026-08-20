@@ -309,8 +309,6 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
             (f"Character reference, {char_b_desc}, single character, plain white background, half-body close-up, waist up, front view, 3D cartoon style, no text, no background scene", "char_b_ref.png"))
     if is_quest:
         char_c_desc = script.get("char_c_description", "friendly staff member")
-        image_prompts.append(
-            (f"Character design sheet, {char_a_desc} on the left, {char_c_desc} on the right, plain white background, full body, front view, 3D cartoon style, no text, no background, 16:9", "char_scene_c.png"))
         # Host background (TV studio)
         host_bg_prompt = script.get("host_bg_prompt", "a bright modern TV studio set with a large screen behind, warm lighting")
         image_prompts.append((f"{host_bg_prompt}, {_QUEST_STYLE}, no people, 16:9", "host_bg.png"))
@@ -345,14 +343,13 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
 
         if is_static or is_quest:
             char_scene_cdn = image_urls.get("char_scene.png", "")
-            char_scene_c_cdn = image_urls.get("char_scene_c.png", "")
             if is_quest:
-                # Quest uses per-character atlas (3 chars × 4 poses)
+                # Quest uses per-character atlas (4 chars × 8 poses)
                 _generate_quest_atlases(script, img_dir, tts_thread)
             else:
                 _generate_dialogue_images(
                     dialogue, img_dir, char_a_desc, char_b_desc, scene,
-                    is_quest, char_scene_cdn, char_scene_c_cdn, tts_thread)
+                    is_quest, char_scene_cdn, "", tts_thread)
         elif is_stop_motion:
             char_a_ref_cdn = image_urls.get("char_a_ref.png", "")
             char_b_ref_cdn = image_urls.get("char_b_ref.png", "")

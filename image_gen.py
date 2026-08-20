@@ -16,7 +16,6 @@ def check_step2_resume(checkpoint, script, dirs, n, is_quest):
     step2_done = step_done(checkpoint, "step2_images_tts")
     char_scene_file = img_dir / "char_scene.png"
     scene_file = img_dir / "scene.png"
-    char_scene_c_file = img_dir / "char_scene_c.png"
     all_audio_exist = all((audio_dir / f"dialogue_{i}.mp3").exists() for i in range(n))
     if is_quest:
         all_zh_exist = True
@@ -27,17 +26,14 @@ def check_step2_resume(checkpoint, script, dirs, n, is_quest):
     narration_exist = all((audio_dir / f).exists() for f in narration_files)
     all_dialogue_imgs_exist = (not (checkpoint.get("structure") in ("static", "quest"))) or all(
         (img_dir / f"dialogue_img_{i}.png").exists() for i in range(n))
-    quest_imgs_ok = (not is_quest) or char_scene_c_file.exists()
 
     if not (step2_done and char_scene_file.exists() and scene_file.exists()
-            and quest_imgs_ok and all_audio_exist and all_zh_exist
+            and all_audio_exist and all_zh_exist
             and narration_exist and all_dialogue_imgs_exist):
         return None
 
     print("  [Resume] Step 2 already done, loading existing images + audio...")
     reupload_files = ["char_scene.png", "scene.png"]
-    if is_quest:
-        reupload_files.append("char_scene_c.png")
     image_urls = {}
     for filename in reupload_files:
         filepath = str(img_dir / filename)
