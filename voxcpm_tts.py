@@ -254,7 +254,7 @@ class VoxCPMEngine(TTSEngine):
         cache_dir.mkdir(parents=True, exist_ok=True)
         # Deterministic filename based on voice hash
         import hashlib
-        voice_hash = hashlib.md5(voice.encode()).hexdigest()[:8]
+        voice_hash = int(hashlib.md5(voice.encode()).hexdigest()[:8], 16)
         ref_wav = str(cache_dir / f"ref_{voice_hash}.wav")
 
         # Check if we already downloaded a reference (resume support)
