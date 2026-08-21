@@ -119,10 +119,15 @@ class VoxCPMEngine(TTSEngine):
                 do_normalize: bool = None,
                 denoise: bool = None) -> str:
         """Submit a generation task, return event_id."""
+        # Gradio expects FileData object (not bare string) for audio input
+        ref_data = None
+        if reference_wav_path:
+            ref_data = {"path": reference_wav_path,
+                        "meta": {"_type": "gradio.FileData"}}
         data = [
             text,
             control,
-            reference_wav_path,
+            ref_data,
             use_prompt_text,
             prompt_text,
             cfg_value if cfg_value is not None else self.CFG_VALUE,
