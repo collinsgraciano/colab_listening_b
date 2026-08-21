@@ -308,15 +308,24 @@ def save_youtube_metadata(script: dict, timeline: list[dict],
         chapters_text = "\n⏱️ Chapters:\n" + "\n".join(chapters) + "\n"
         description = description + "\n" + chapters_text
 
+    description_en = script.get("youtube_description_en", "")
+    if chapters and description_en and "⏱️" not in description_en:
+        chapters_text = "\n⏱️ Chapters:\n" + "\n".join(chapters) + "\n"
+        description_en = description_en + "\n" + chapters_text
+
     tags = script.get("youtube_tags", [])
     # Append tags as #hashtag string at the end of description
     if tags:
         hashtags = "".join(f"#{t.replace(' ', '')}" for t in tags)
         description = description.rstrip() + "\n" + hashtags
+        if description_en:
+            description_en = description_en.rstrip() + "\n" + hashtags
 
     metadata = {
         "title": script.get("youtube_title", script.get("title", "")),
+        "title_en": script.get("youtube_title_en", ""),
         "description": description,
+        "description_en": description_en,
         "tags": tags,
         "chapters": chapters,
     }

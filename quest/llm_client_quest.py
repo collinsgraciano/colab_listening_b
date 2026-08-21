@@ -87,7 +87,8 @@ def generate_quest_script(topic: str, cefr: str = "A1",
     outline_prompt = _build_outline_prompt(topic, cefr, used_summaries)
     outline = _chat_and_parse(
         outline_prompt, temperature=0.9, max_tokens=4096, reasoning_effort="medium",
-        label="outline")
+        label="outline",
+        system="You are an expert ESL video director designing slow-listening stories for overseas Chinese beginners. Output valid JSON only.")
 
     # ── Round 2: Per-phase dialogue ─────────────────────────────────────
     print("  [LLM] Round 2: Dialogue generation (4 phases)...")
@@ -137,7 +138,8 @@ def generate_quest_script(topic: str, cefr: str = "A1",
     meta_prompt = _build_metadata_prompt(topic, cefr, outline, all_dialogue)
     meta = _chat_and_parse(
         meta_prompt, temperature=0.6, max_tokens=8192, reasoning_effort="low",
-        label="metadata")
+        label="metadata",
+        system="You are a YouTube content strategist for ESL learning videos. Output valid JSON only.")
 
     # ── Round 4: Per-line enhancement (batched to avoid 524 timeouts) ──
     print("  [LLM] Round 4: Per-line enhancement...")
@@ -154,7 +156,8 @@ def generate_quest_script(topic: str, cefr: str = "A1",
         try:
             batch_result = _chat_and_parse(
                 batch_prompt, temperature=0.3, max_tokens=4096, reasoning_effort="low",
-                label=f"enhance_{batch_start}")
+                label=f"enhance_{batch_start}",
+                system="You are a video director assistant. Decide which characters appear on screen for each dialogue line. Output valid JSON array only.")
             if isinstance(batch_result, list):
                 for enh in batch_result:
                     if isinstance(enh, dict):
@@ -214,11 +217,15 @@ def generate_quest_script(topic: str, cefr: str = "A1",
         "char_a_role": outline.get("char_a_role", ""),
         "char_b_role": outline.get("char_b_role", ""),
         "char_c_role": outline.get("char_c_role", "staff"),
+        "char_a_personality": outline.get("char_a_personality", "curious and energetic"),
+        "char_b_personality": outline.get("char_b_personality", "calm and knowledgeable"),
         "host_description": outline.get("host_description", ""),
         "host_gender": outline.get("host_gender", "female"),
         "host_bg_prompt": meta.get("host_bg_prompt", "a bright modern TV studio set, 3D cartoon style, no people"),
         "youtube_title": meta.get("youtube_title", ""),
+        "youtube_title_en": meta.get("youtube_title_en", ""),
         "youtube_description": meta.get("youtube_description", ""),
+        "youtube_description_en": meta.get("youtube_description_en", ""),
         "youtube_tags": meta.get("youtube_tags", []),
         "thumbnail_prompt": meta.get("thumbnail_prompt", ""),
         "scene": outline.get("scene", topic.lower()),
@@ -277,7 +284,8 @@ JSON array ONLY, no markdown."""
     try:
         result = _chat_and_parse(
             prompt, temperature=0.3, max_tokens=4096, reasoning_effort="low",
-            label="fallback_zh")
+            label="fallback_zh",
+            system="You are a professional translator. Translate English to Traditional Chinese (繁體中文). Output valid JSON array only.")
     except RuntimeError as e:
         print(f"  [LLM] Fallback zh translation failed: {e}")
         return {}
@@ -308,7 +316,8 @@ JSON array ONLY, no markdown."""
 
 
 def _chat_and_parse(prompt: str, temperature: float = 0.8, max_tokens: int = 8192,
-                    reasoning_effort: str = "low", label: str = "") -> dict:
+                    reasoning_effort: str = "low", label: str = "",
+                    system: str = "") -> dict:
     """Call _chat, extract JSON, retry on failure.
 
     Retry count is configurable via LLM_RETRIES env var (default 10).
@@ -317,10 +326,14 @@ def _chat_and_parse(prompt: str, temperature: float = 0.8, max_tokens: int = 819
     import time
     last_error = None
     max_retries = int(os.environ.get("LLM_RETRIES", "10"))
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
     for attempt in range(max_retries):
         try:
             content = _chat(
-                [{"role": "user", "content": prompt}],
+                messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
                 reasoning_effort=reasoning_effort,
@@ -349,6 +362,11 @@ AVOID DUPLICATES — these scenarios already exist:
 
 Topic: {topic}
 CEFR: {cefr}
+CEFR Vocabulary Guide:
+- A1: basic everyday words, present tense, short sentences (5-8 words)
+- A2: common daily phrases, present/past tense, sentences 5-12 words
+- B1: moderate vocabulary, mixed tenses, sentences 8-15 words, some idioms
+- B2: advanced vocabulary, complex sentences, natural idioms and phrasal verbs
 
 Design a story where the LISTENING QUESTION has a non-obvious answer — a fun fact or common misconception revealed INSIDE the dialogue (e.g. "Why is it called bubble tea?" not "What flavor did he order?").
 
@@ -364,9 +382,11 @@ Output JSON ONLY:
   "char_a_description": "detailed physical description (gender, hair, clothing)",
   "char_a_gender": "male or female",
   "char_a_role": "role in story",
+  "char_a_personality": "personality in 1-2 sentences (e.g. curious and energetic, asks lots of questions)",
   "char_b_description": "...",
   "char_b_gender": "...",
   "char_b_role": "...",
+  "char_b_personality": "personality in 1-2 sentences (e.g. calm and knowledgeable, likes to explain things)",
   "char_c_description": "staff member description (uniform, etc.)",
   "char_c_gender": "...",
   "char_c_role": "...",
@@ -390,11 +410,13 @@ _PHASE_RULES = {
     "buildup": (
         'ONLY char_a and char_b speak. They discuss going to the place.\n'
         'The LISTENING QUESTION arises naturally — one character is curious, the other says "you\'ll see" or "I\'ll tell you later".\n'
+        'Do NOT reveal the answer. The question should arise naturally but NO answer is given.\n'
         'Use at least 2 key_words. Include filler words ("well", "you know", "hmm", "actually").'
     ),
     "core": (
         'char_a, char_b, AND char_c all speak. Include BOTH teaching (explaining options/menu/process) AND transaction (ordering, price, payment).\n'
         'char_c (staff) must appear at least once per 5 lines.\n'
+        'Do NOT reveal the answer to the listening question. Characters discuss the topic but the answer remains unknown.\n'
         'Include a small surprise or interesting detail.\n'
         'Use at least 3 key_words.'
     ),
@@ -427,6 +449,8 @@ def _generate_phase_dialogue(phase: str, outline: dict, n_lines: int,
     misconception = outline.get("common_misconception_en", "")
     phase_summary = outline.get(f"{phase}_summary", "")
     key_words = ", ".join(w.get("en", "") for w in outline.get("key_words", []))
+    char_a_personality = outline.get("char_a_personality", "curious and energetic")
+    char_b_personality = outline.get("char_b_personality", "calm and knowledgeable")
 
     if phase == "reveal":
         extra = f"\nThe ANSWER to reveal: {answer}\nCommon misconception: {misconception}"
@@ -443,10 +467,14 @@ Phase summary: {phase_summary}
 
 {prev_hint}
 RULES:
-- CEFR {cefr} level. Each line 5-15 words (NOT limited to 10).
+- CEFR {cefr} level. Each line 5-15 words, vary the length naturally.
 - Natural conversational English with filler words ("well", "you know", "hmm", "actually", "oh").
-- Characters have personality — char_a is curious/energetic, char_b is calm/knowledgeable.
+- Vary sentence length — mix short reactions (3-5 words) with longer explanations (10-15 words).
+- Characters have personality — char_a is {char_a_personality}, char_b is {char_b_personality}.
 - {rules}
+
+Example output (for reference format only):
+[{{"speaker":"char_a","text":"Hey, I've been wanting to try this place! What's good here?","phase":"{phase}","zh":"嘿，我一直想來這裡試試！有什麼好喝的？"}}]
 
 Output: JSON array of exactly {n_lines} objects:
 [{{"speaker":"char_a","text":"English sentence","phase":"{phase}","zh":"繁體中文翻譯"}}]
@@ -456,7 +484,8 @@ NO markdown, NO explanation. JSON array ONLY."""
 
     result = _chat_and_parse(
         prompt, temperature=temperature, max_tokens=4096,
-        reasoning_effort="medium", label=f"dialogue_{phase}")
+        reasoning_effort="medium", label=f"dialogue_{phase}",
+        system="You are an ESL dialogue writer. Write natural conversational English. Output valid JSON array only.")
     if isinstance(result, list):
         return result
     if isinstance(result, dict) and "dialogue" in result:
@@ -494,20 +523,22 @@ Generate JSON with these fields:
   "intro_zh": "繁中 story hook translation",
   "welcome_en": "short channel welcome (max 8 words)",
   "welcome_zh": "繁中",
-  "hook_intro_en": "narrator opening 70-110 words: greeting→topic→slow speech promise→repeat listening question→answer inside video→comment CTA→let's begin",
+  "hook_intro_en": "narrator opening 70-110 words. Must include: greeting, topic intro, the listening question, and a CTA. Vary the structure — don't always start with greeting.",
   "hook_intro_zh": "繁中",
   "outro": "narrator closing 80-110 words: how was it→repeat question→comment CTA→channel description→subscribe→bye",
   "outro_zh": "繁中",
   "host_bg_prompt": "TV studio background prompt (3D cartoon, no people)",
-  "youtube_title": "高CTR繁中标题 with 【】and ｜ format, Pattern D preferred",
-  "youtube_description": "full description with chapters + key_words",
+  "youtube_title": "高CTR繁中标题 with 【】and ｜ format. Pattern D: 【英文聽力挑戰】{{emoji}}{{topic 繁中}}｜❓你能聽出答案嗎？｜{{CEFR}}慢速英文｜不用背多聽就會用｜英文聽力訓練｜{{English topic}}",
+  "youtube_title_en": "high-CTR PURE ENGLISH title (no Chinese). Include topic + key skill + compelling hook. Max 100 chars. Example: Can You Guess Why It's Called Bubble Tea? ☕ Slow English Listening",
+  "youtube_description": "full 繁中 description with chapters + key_words",
+  "youtube_description_en": "full PURE ENGLISH description (no Chinese). Include chapters section, key_words, hashtags, and subscribe CTA.",
   "youtube_tags": ["tag1","tag2",...],
   "thumbnail_prompt": "thumbnail image prompt",
   "thumbnail_expression": "main character expression",
   "thumbnail_action": "main character action",
   "thumbnail_subtitle": "繁中 short subtitle",
   "thumbnail_icons": [{{"en":"word","zh":"繁中"}}],
-  "scene_images": [{{"prompt":"3D cartoon scene view, 16:9, no people","label":"counter"}}]
+  "scene_images": [{{"prompt":"specific 3D cartoon scene description with details (counter, menu board, equipment, decor), 16:9, no people","label":"short English label"}}]
 }}
 
 JSON ONLY, no markdown."""

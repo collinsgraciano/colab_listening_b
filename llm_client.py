@@ -176,10 +176,15 @@ Do NOT create dialogue that is too similar to these. Use a DIFFERENT situation, 
 """
     return f"""You are an expert ESL teacher creating ENGLISH LISTENING PRACTICE content for overseas Chinese learners.
 
-CORE MISSION: 帮助海外华人用最地道最日常的英语，搞定真实生活中的每一个场景。
-
+CORE MISSION: 帮助海外华人用最地道最日常的英语，搞定真实生活中的每一个场景.
+{used_hint}
 Topic: {topic}
 CEFR Level: {cefr}
+CEFR Vocabulary Guide:
+- A1: basic everyday words, present tense, short sentences (5-8 words)
+- A2: common daily phrases, present/past tense, sentences 5-12 words
+- B1: moderate vocabulary, mixed tenses, sentences 8-15 words, some idioms
+- B2: advanced vocabulary, complex sentences, natural idioms and phrasal verbs
 Output: a JSON object ONLY (no markdown, no explanation).
 
 CONTENT REQUIREMENTS — This is for a LISTENING PRACTICE video targeting overseas Chinese:
@@ -202,21 +207,17 @@ TECHNICAL REQUIREMENTS:
   - "zh": Traditional Chinese (繁體中文) translation
   - "image_prompt": a detailed prompt describing what this character looks like AND what they are doing. MUST include: (1) the character's EXACT physical description (same every time for same speaker), (2) their role (e.g. "a waitress", "a customer"), (3) the scene location, (4) the action matching the dialogue text.
   - "video_prompt": a detailed prompt for AI video generation. MUST include the SAME character description and action as image_prompt. MUST also include the dialogue text so the character appears to be speaking those words naturally (e.g. "The character says: 'Hi, I'd like a latte, please.' while gesturing toward the menu"). CRITICAL: the video MUST closely reference the uploaded reference image — the character's appearance, clothing, and the scene must match the reference image exactly.
-  - "poses": an array of exactly 2 pose descriptions for stop-motion animation. Each entry is a short prompt fragment describing ONLY the character's expression and gesture — NO props, NO objects, NO scene elements. MUST include the character's physical description (same as char_a/char_b_description). MUST describe a DIFFERENT facial expression or hand gesture for each pose. The first pose should show the character actively speaking (mouth open, expressive gesture). The second pose should show the character listening or reacting (e.g. head tilted, slight smile, relaxed hands). Example: ["a young woman with brown hair in a green apron, speaking with mouth open, raising right hand expressively", "a young woman with brown hair in a green apron, listening with a slight smile, relaxed posture"]. CRITICAL: the character's physical appearance (hair, clothing, accessories) MUST be IDENTICAL in both poses — only the gesture/expression changes. Do NOT mention any objects, props, or scene background in the poses.
+  - "poses": array of exactly 2 pose descriptions for stop-motion animation. Pose 0 = speaking (mouth open, expressive gesture). Pose 1 = listening (slight smile, relaxed). Each MUST include the character's full physical description (identical every time). NO props, NO objects, NO scene. Example: ["a young woman with brown hair in a green apron, speaking with mouth open, raising right hand", "a young woman with brown hair in a green apron, listening with a slight smile, relaxed posture"].
 - "char_a_description": a detailed physical description of speaker 1 (gender, hair color, hairstyle, clothing). This MUST be used identically in ALL of speaker 1's image_prompt and video_prompt entries.
 - "char_b_description": a detailed physical description of speaker 2 (gender, hair color, hairstyle, clothing). This MUST be used identically in ALL of speaker 2's image_prompt and video_prompt entries.
 - "char_a_gender": "male" or "female" — the gender of speaker 1
 - "char_b_gender": "male" or "female" — the gender of speaker 2
 - "char_a_role": the role of speaker 1 in the story (e.g. "waitress", "customer")
 - "char_b_role": the role of speaker 2 in the story (e.g. "customer", "waitress")
-- "youtube_title": a high-CTR YouTube title for overseas Chinese learners. ALL Chinese text in Traditional Chinese (繁體中文). Use the following format patterns (pick one, vary between videos):
-  Pattern A: 【沉浸式英文動畫】{{hook phrase}} {{emoji}} {{topic description in 繁中}}：{{specific skills listed}}，聽完就能說！｜{{English topic}}
-  Pattern B: 【每天50句英文】{{emoji}}{{topic 繁中}}情境對話｜🎬沉浸式英文動畫｜旅行必備英文｜不用背多聽就會用｜英文聽力訓練｜情境英文對話｜高頻口語句型｜英文口說跟讀練習｜英文高效學習法
-  Pattern C: 【🎬沉浸式英文動畫】{{emoji}}{{topic 繁中}}英文｜✅{{specific skill 繁中}}｜🗣️small talk・{{sub-topic}}｜每天50句英文｜真實情境完整呈現｜💡不用背多聽就會用｜{{CEFR}} 初學者必學｜旅行必備英文｜英文聽力口說
-  Rules: Start with 【】bracket tag. Use ｜ as separator. Include 3-8 topic-relevant emoji. Include catchy power phrases like "不用背多聽就會用", "聽完就能說", "超實用". End with ｜{{English topic name}}. Title length 80-150 chars.
-  Examples: "【沉浸式英文動畫】出國怕開口？✈️ 超實用機場英文：訂票、報到、托運行李一次搞定，聽完就能說！｜Airport English"
-  "【每天50句英文】🧳機場失物招領情境對話｜🎬沉浸式英文動畫｜旅行必備英文｜不用背多聽就會用｜英文聽力訓練｜情境英文對話｜高頻口語句型｜英文口說跟讀練習｜英文高效學習法"
+- "youtube_title": a high-CTR YouTube title for overseas Chinese learners. ALL Chinese text in Traditional Chinese (繁體中文). Start with 【】bracket tag, use ｜ as separator, include 3-8 emoji and catchy power phrases (e.g. "不用背多聽就會用", "聽完就能說"). End with ｜{{English topic}}. Length 80-150 chars. Example: "【沉浸式英文動畫】出國怕開口？✈️ 超實用機場英文：訂票、報到、托運行李一次搞定，聽完就能說！｜Airport English"
+- "youtube_title_en": a high-CTR YouTube title in PURE ENGLISH (no Chinese). Include the topic, key skill, and a compelling hook. Max 100 chars. Example: "Can You Order Coffee in English? ☕ Real Conversation at a Coffee Shop"
 - "youtube_description": a full YouTube video description (max 3000 chars). First line must be a hook with the main keyword. Include a "⏱️ Chapters:" section with timestamps for: 00:00 Title, 00:05 Dialogue, 00:xx Shadowing Practice, 00:xx Outro. End with 3 hashtags (#EnglishListening #ESL #LearnEnglish) and a subscribe CTA. ALL Chinese text in Traditional Chinese (繁體中文).
+- "youtube_description_en": a full YouTube video description in PURE ENGLISH (no Chinese). Max 3000 chars. First line = hook with main keyword. Include "⏱️ Chapters:" section with timestamps. End with hashtags and subscribe CTA.
 - "youtube_tags": an array of 15-20 SEO tags (mix of short and long-tail keywords, include both English and Traditional Chinese tags)
 - "scene": the English name of the scene/location (e.g. "pharmacy", "coffee shop", "hotel lobby"). Used for thumbnail and prompts.
 - "thumbnail_expression": the facial expression of the main character on the thumbnail (e.g. "surprised and excited", "confused and thinking", "cheerful and smiling", "friendly and confident")
@@ -235,11 +236,12 @@ TECHNICAL REQUIREMENTS:
 - "practice_intro_en": English instruction before the 跟讀 section
 - "practice_intro_zh": Traditional Chinese translation of the practice intro
 - ALL Chinese text MUST be in Traditional Chinese (繁體中文)
-- CRITICAL: the gender in char_a_description and char_b_description MUST be consistent. If speaker 1 is female, her description MUST say "a young woman" and ALL her image_prompt/video_prompt entries MUST say "a young woman". NEVER mix up genders.
-- CRITICAL: each speaker's description (hair, clothing, etc.) MUST be IDENTICAL across ALL their image_prompt and video_prompt entries. Do not change hair color, clothing, or any physical trait between lines.
-- CRITICAL: image_prompt and video_prompt MUST match the dialogue context exactly. If at a restaurant, prompts must say "restaurant", NOT "airport" or "supermarket".
-- CRITICAL: the scene location in image_prompt and video_prompt MUST be consistent throughout ALL lines.
-- CRITICAL: the speaker field in dialogue MUST use "char_a" or "char_b" (not the actual name).
+
+CONSISTENCY RULES (CRITICAL):
+- Gender: char_a_gender/char_b_gender MUST match the description text. If female, description MUST say "a young woman" and ALL her prompts MUST say so. NEVER mix genders.
+- Appearance: each speaker's description (hair, clothing, etc.) MUST be IDENTICAL across ALL their image_prompt/video_prompt/poses entries.
+- Scene: image_prompt and video_prompt MUST match the dialogue context (if at a restaurant, say "restaurant", NOT "airport"). Scene MUST be consistent throughout ALL lines.
+- Speaker field: MUST use "char_a" or "char_b" (not actual names).
 
 JSON schema:
 {{
@@ -261,7 +263,9 @@ JSON schema:
   "char_a_role": string,
   "char_b_role": string,
   "youtube_title": string,
+  "youtube_title_en": string,
   "youtube_description": string,
+  "youtube_description_en": string,
   "youtube_tags": [string],
   "thumbnail_prompt": string,
   "scene": string,
@@ -325,7 +329,10 @@ def generate_listening_script(topic: str, cefr: str = "A2",
     for attempt in range(3):
         try:
             content = _chat(
-                [{"role": "user", "content": prompt}],
+                [
+                    {"role": "system", "content": "You are an expert ESL teacher creating English listening practice content for overseas Chinese learners. Output valid JSON only — no markdown, no explanations."},
+                    {"role": "user", "content": prompt},
+                ],
                 temperature=0.8 if attempt == 0 else 0.7,
                 max_tokens=8192,
             )
@@ -366,7 +373,9 @@ def generate_listening_script(topic: str, cefr: str = "A2",
     script.setdefault("char_a_role", "")
     script.setdefault("char_b_role", "")
     script.setdefault("youtube_title", "")
+    script.setdefault("youtube_title_en", "")
     script.setdefault("youtube_description", "")
+    script.setdefault("youtube_description_en", "")
     script.setdefault("youtube_tags", [])
     script.setdefault("thumbnail_prompt", "")
     script.setdefault("scene", "")
