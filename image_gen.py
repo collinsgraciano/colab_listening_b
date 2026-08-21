@@ -259,8 +259,10 @@ def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
         try:
             gen_params = {
                 "prompt": atlas_prompt,
-                "provider": "seedream",
-                "image_size": {"width": 1280, "height": 1280},
+                "provider": "frontier",
+                "quality": "high",
+                "image_size": {"width": 1920, "height": 1920},
+                "resolution": "4K",
                 "output_format": "png",
             }
             if ref_cdn:
@@ -359,14 +361,18 @@ def generate_quest_atlases(script, img_dir, tts_thread):
             f"no props, no objects, no scene, no text"
         )
         grid_w, grid_h = 4, 2
-        img_size = {"width": 5120, "height": 2560}
+        # frontier 4K: long edge <= 3840, total pixels <= 8,294,400
+        # 3840x1920 = 7,372,800 px → 4×2 grid = 960×960 per cell
+        img_size = {"width": 3840, "height": 1920}
 
         print(f"  [QuestAtlas] Generating {grid_w}×{grid_h} atlas for {char_key} ({n_poses} poses)...")
         try:
             gen_params = {
                 "prompt": atlas_prompt,
-                "provider": "seedream",
+                "provider": "frontier",
+                "quality": "high",
                 "image_size": img_size,
+                "resolution": "4K",
                 "output_format": "png",
             }
             result = call_tool("generate_image", gen_params)
