@@ -45,7 +45,7 @@ class VoxCPMEngine(TTSEngine):
     """
 
     # --- Generation parameters ---
-    CFG_VALUE = 4          # Higher = closer adherence to control description
+    CFG_VALUE = 2.0        # Gradio slider range 1.0–3.0, default 2.0
     DO_NORMALIZE = True
     DENOISE = True
 
@@ -122,7 +122,7 @@ class VoxCPMEngine(TTSEngine):
         data = [
             text,
             control,
-            reference_wav_path or "",
+            reference_wav_path,
             use_prompt_text,
             prompt_text,
             cfg_value if cfg_value is not None else self.CFG_VALUE,
@@ -277,7 +277,7 @@ class VoxCPMEngine(TTSEngine):
                         ref_text, voice,
                         cfg_value=self.CFG_VALUE,
                         do_normalize=self.DO_NORMALIZE,
-                        denoise=self.DENOISE,
+                        denoise=False,
                     )
                     result = self._wait(eid, timeout=600)
                     self._download(result, ref_wav)
