@@ -393,6 +393,10 @@ def build_voice_map(script: dict) -> dict:
     char_c_gender = script.get("char_c_gender", "").lower()
     if char_c_gender:
         voice_map["char_c"] = "am_adam" if char_c_gender == "male" else "af_sarah"
+    # Quest mode host (节目主) — appears in welcome/hook/outro segments
+    host_gender = script.get("host_gender", "").lower()
+    if host_gender:
+        voice_map["host"] = "am_adam" if host_gender == "male" else "af_sky"
     return voice_map
 
 

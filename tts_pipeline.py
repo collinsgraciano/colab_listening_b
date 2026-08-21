@@ -42,12 +42,12 @@ def generate_tts(script, dialogue, audio_dir, results, quest=False, tts_rate=Non
         tts = VoxCPMEngine(worker_url, api_key)
         if not tts.test_connection():
             raise RuntimeError("VoxCPM Worker health check failed. Check VOXCPM_WORKER_URL.")
-        narration_voice = voice_map.get("narrator", "Warm narrator voice, clear, moderate pace.")
+        narration_voice = voice_map.get("host", voice_map.get("narrator", "Warm narrator voice, clear, moderate pace."))
         voice_label = "voxcpm"
     else:
         tts = TTSEngine()
         voice_map = build_voice_map(script)
-        narration_voice = "af_sky"
+        narration_voice = voice_map.get("host", "af_sky")
         voice_label = "kokoro"
 
     narration = {}

@@ -470,9 +470,15 @@ Output JSON ONLY (no markdown):
                 voices[key] = "Warm male voice, clear articulation, friendly and encouraging, moderate pace."
         voices["narrator"] = "Professional female narrator voice, warm and clear, radio-host quality, moderate pace."
 
-    # Ensure narrator exists
+    # Ensure narrator exists — respect host_gender in quest mode
     if "narrator" not in voices or not voices["narrator"]:
-        voices["narrator"] = "Professional narrator voice, warm and clear, radio-host quality, moderate pace."
+        host_gender = script.get("host_gender", "").lower()
+        if host_gender == "male":
+            voices["narrator"] = "Professional male narrator voice, warm and clear, radio-host quality, moderate pace."
+        elif host_gender == "female":
+            voices["narrator"] = "Professional female narrator voice, warm and clear, radio-host quality, moderate pace."
+        else:
+            voices["narrator"] = "Professional narrator voice, warm and clear, radio-host quality, moderate pace."
 
     # Ensure all expected keys exist
     for key in ("char_a", "char_b"):

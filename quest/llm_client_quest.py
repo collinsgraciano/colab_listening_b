@@ -370,6 +370,11 @@ CEFR Vocabulary Guide:
 
 Design a story where the LISTENING QUESTION has a non-obvious answer — a fun fact or common misconception revealed INSIDE the dialogue (e.g. "Why is it called bubble tea?" not "What flavor did he order?").
 
+CRITICAL — GENDER CONSISTENCY:
+- Each character's gender (char_a_gender, char_b_gender, char_c_gender, host_gender) MUST be "male" or "female" (never "..." or empty).
+- The gender MUST match the physical description. If host_description says "a young man", host_gender MUST be "male".
+- This is essential for correct voice assignment in TTS.
+
 {used_hint}
 Output JSON ONLY:
 {{
@@ -391,7 +396,7 @@ Output JSON ONLY:
   "char_c_gender": "...",
   "char_c_role": "...",
   "host_description": "TV host appearance (separate from dialogue characters)",
-  "host_gender": "...",
+  "host_gender": "male or female",
   "key_words": [{{"en": "word", "zh": "繁中"}}],
   "buildup_summary": "3-5 sentence story summary for buildup phase",
   "core_summary": "3-5 sentence story summary for core phase (include teaching + transaction)",

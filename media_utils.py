@@ -337,6 +337,48 @@ def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
     sub_overlay_dir.mkdir(exist_ok=True)
 
     BOTTOM_MARGIN = 36  # clear of frame edge + YouTube player UI
+    EN_SIZE = 44
+    ZH_SIZE = 38
+    MAX_SUB_W = w - 80
+    LINE_GAP = 6
+
+    def _wrap_fixed(text, font, max_w, is_cjk=False):
+        """Wrap text into lines at a fixed font size (no shrinking).
+
+        For CJK text, wrap per-character; for Latin, wrap per-word.
+        Returns list of (line_text, line_width, line_height).
+        """
+        lines = []
+        if is_cjk:
+            cur = ""
+            for ch in text:
+                test = cur + ch
+                bbox = draw.textbbox((0, 0), test, font=font)
+                if bbox[2] - bbox[0] <= max_w or not cur:
+                    cur = test
+                else:
+                    lines.append(cur)
+                    cur = ch
+            if cur:
+                lines.append(cur)
+        else:
+            words = text.split()
+            cur = ""
+            for word in words:
+                test = (cur + " " + word).strip()
+                bbox = draw.textbbox((0, 0), test, font=font)
+                if bbox[2] - bbox[0] <= max_w or not cur:
+                    cur = test
+                else:
+                    lines.append(cur)
+                    cur = word
+            if cur:
+                lines.append(cur)
+        result = []
+        for ln in lines:
+            bbox = draw.textbbox((0, 0), ln, font=font)
+            result.append((ln, bbox[2] - bbox[0], bbox[3] - bbox[1]))
+        return result
 
     for i, entry in enumerate(subtitle_entries):
         overlay_path = str(sub_overlay_dir / f"sub_{i:03d}.png")
@@ -346,51 +388,46 @@ def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
         en_text = entry["en"]
         zh_text = entry["zh"] if show_zh else ""
 
-        en_font = en_w = en_h = None
+        # Fixed font size with word wrapping
+        en_lines = []
         if en_text:
-            en_size = 50
-            en_font = ImageFont.truetype(FONT_EN, en_size)
-            while en_size > 28:
-                bbox = draw.textbbox((0, 0), en_text, font=en_font)
-                if bbox[2] - bbox[0] <= w - 80:
-                    break
-                en_size -= 2
-                en_font = ImageFont.truetype(FONT_EN, en_size)
-            bbox = draw.textbbox((0, 0), en_text, font=en_font)
-            en_w, en_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            en_font = ImageFont.truetype(FONT_EN, EN_SIZE)
+            en_lines = _wrap_fixed(en_text, en_font, MAX_SUB_W, is_cjk=False)
 
-        zh_font = zh_w = zh_h = None
+        zh_lines = []
         if zh_text:
-            zh_size = 50
-            zh_font = ImageFont.truetype(FONT_ZH, zh_size)
-            while zh_size > 24:
-                bbox = draw.textbbox((0, 0), zh_text, font=zh_font)
-                if bbox[2] - bbox[0] <= w - 80:
-                    break
-                zh_size -= 2
-                zh_font = ImageFont.truetype(FONT_ZH, zh_size)
-            bbox = draw.textbbox((0, 0), zh_text, font=zh_font)
-            zh_w, zh_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+            zh_font = ImageFont.truetype(FONT_ZH, ZH_SIZE)
+            zh_lines = _wrap_fixed(zh_text, zh_font, MAX_SUB_W, is_cjk=True)
+
+        en_total_h = sum(lh for _, _, lh in en_lines) + LINE_GAP * max(0, len(en_lines) - 1) if en_lines else 0
+        zh_total_h = sum(lh for _, _, lh in zh_lines) + LINE_GAP * max(0, len(zh_lines) - 1) if zh_lines else 0
 
         # Stack bottom-up: ZH lowest, EN above it
-        if en_text and zh_text:
-            zh_y = h - BOTTOM_MARGIN - zh_h
-            en_y = zh_y - 15 - en_h
-        elif en_text:
-            en_y = h - BOTTOM_MARGIN - en_h
-            zh_y = 0
+        if en_lines and zh_lines:
+            zh_block_y = h - BOTTOM_MARGIN - zh_total_h
+            en_block_y = zh_block_y - 15 - en_total_h
+        elif en_lines:
+            en_block_y = h - BOTTOM_MARGIN - en_total_h
+            zh_block_y = 0
         else:
-            en_y = 0
-            zh_y = h - BOTTOM_MARGIN - zh_h
+            en_block_y = 0
+            zh_block_y = h - BOTTOM_MARGIN - zh_total_h
 
-        if en_text and en_font is not None:
-            draw.text(((w - en_w) // 2, en_y), en_text, font=en_font,
+        # Render EN lines
+        cur_y = en_block_y
+        for ln_text, ln_w, ln_h in en_lines:
+            draw.text(((w - ln_w) // 2, cur_y), ln_text, font=en_font,
                       fill=(255, 255, 255, 255), stroke_width=5,
                       stroke_fill=(0, 0, 0, 255))
-        if zh_text and zh_font is not None:
-            draw.text(((w - zh_w) // 2, zh_y), zh_text, font=zh_font,
+            cur_y += ln_h + LINE_GAP
+
+        # Render ZH lines
+        cur_y = zh_block_y
+        for ln_text, ln_w, ln_h in zh_lines:
+            draw.text(((w - ln_w) // 2, cur_y), ln_text, font=zh_font,
                       fill=(255, 215, 0, 255), stroke_width=4,
                       stroke_fill=(0, 0, 0, 255))
+            cur_y += ln_h + LINE_GAP
 
         bg.save(overlay_path, "PNG")
         entry["overlay_path"] = overlay_path
