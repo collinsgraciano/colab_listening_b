@@ -422,3 +422,112 @@ def generate_quest_atlases(script, img_dir, tts_thread):
 
     print(f"  [QuestAtlas] Done — 4 characters × 8 poses = 32 pose images.")
     return {}
+
+
+def generate_scene_atlas(scene_images, scene, img_dir, tts_thread):
+    """Generate up to 4 scene backgrounds in ONE atlas image (2×2 grid), then split.
+
+    Saves 3 API calls vs generating each scene separately.
+    Uses frontier 4K: atlas ~2880×2880 → each cell ~1440×1440.
+    """
+    from PIL import Image as PILImage
+
+    _STYLE = ("3D cartoon style, Pixar-like, warm soft lighting, "
+              "cel-shaded, vibrant saturated colors, smooth surfaces")
+
+    n_scenes = min(4, len(scene_images))
+    if n_scenes == 0:
+        print("  [SceneAtlas] No scene_images in script, skipping")
+        return
+
+    # Check if all scene files already exist
+    all_exist = all(
+        os.path.exists(str(img_dir / f"scene_{si}.png"))
+        for si in range(n_scenes)
+    )
+    if all_exist:
+        print(f"  [SceneAtlas] All {n_scenes} scene images already exist, skipping")
+        return
+
+    # Build scene descriptions for the grid
+    scene_descs = []
+    for si in range(n_scenes):
+        si_data = scene_images[si]
+        si_prompt = si_data.get("prompt", f"a {scene} interior, 16:9, no people")
+        scene_descs.append(si_prompt)
+
+    # Pad to 4 with generic descriptions
+    while len(scene_descs) < 4:
+        scene_descs.append(f"a {scene} interior, wide shot, no people")
+
+    atlas_prompt = (
+        f"2x2 grid scene background sheet, four different views of the same location, "
+        f"top-left: {scene_descs[0]}, "
+        f"top-right: {scene_descs[1]}, "
+        f"bottom-left: {scene_descs[2]}, "
+        f"bottom-right: {scene_descs[3]}, "
+        f"all four panels show the same {scene} location from different angles, "
+        f"wide shots showing key elements, no people, no characters, no text, "
+        f"{_STYLE}"
+    )
+
+    atlas_path = str(img_dir / "scene_atlas.png")
+    print(f"  [SceneAtlas] Generating 2×2 grid atlas ({n_scenes} scenes)...")
+
+    try:
+        gen_params = {
+            "prompt": atlas_prompt,
+            "provider": "frontier",
+            "quality": "high",
+            "image_size": {"width": 1920, "height": 1920},
+            "resolution": "4K",
+            "output_format": "png",
+        }
+        result = call_tool("generate_image", gen_params)
+        task_id = parse_task_id(result)
+        data = poll_task(task_id, interval=10, max_wait=600)
+        url = data.get("url", "")
+        if not url:
+            import json as _json
+            raw = data.get("raw_json", "")
+            if raw:
+                try:
+                    rj = _json.loads(raw)
+                    out = rj.get("output") or {}
+                    d = out.get("data") or {}
+                    print(f"    [SceneAtlas] DEBUG output.data keys={list(d.keys())}")
+                except Exception:
+                    pass
+            print(f"    [SceneAtlas] WARNING: No URL for scene atlas")
+            return
+
+        download_file(url, atlas_path)
+        print(f"    [SceneAtlas] Downloaded: scene_atlas.png")
+
+        atlas = PILImage.open(atlas_path).convert("RGB")
+        w, h = atlas.size
+        cw, ch = w // 2, h // 2
+        idx = 0
+        for row in range(2):
+            for col in range(2):
+                if idx >= n_scenes:
+                    break
+                cell = atlas.crop((col * cw, row * ch, (col + 1) * cw, (row + 1) * ch))
+                out_path = str(img_dir / f"scene_{idx}.png")
+                cell.save(out_path)
+                print(f"    [SceneAtlas] Split: scene_{idx}.png ({cell.size[0]}x{cell.size[1]})")
+                idx += 1
+
+        if os.path.exists(atlas_path):
+            os.remove(atlas_path)
+
+    except RuntimeError as e:
+        if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
+            if tts_thread:
+                tts_thread.join(timeout=5)
+            sys.exit(1)
+        print(f"    [SceneAtlas] ERROR: {e}")
+    except Exception as e:
+        print(f"    [SceneAtlas] ERROR: {e}")
+
+    print(f"  [SceneAtlas] Done — {n_scenes} scene images from 1 atlas.")

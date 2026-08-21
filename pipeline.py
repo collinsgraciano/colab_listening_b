@@ -64,6 +64,7 @@ from image_gen import (
     generate_dialogue_images as _generate_dialogue_images,
     generate_pose_images as _generate_pose_images,
     generate_quest_atlases as _generate_quest_atlases,
+    generate_scene_atlas as _generate_scene_atlas,
 )
 from timeline_enrich import enrich_timeline as _enrich_timeline
 from group_audio import build_group_info as _build_group_info
@@ -341,11 +342,7 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         # Host background (TV studio)
         host_bg_prompt = script.get("host_bg_prompt", "a bright modern TV studio set with a large screen behind, warm lighting")
         image_prompts.append((f"{host_bg_prompt}, {_QUEST_STYLE}, no people, 16:9", "host_bg.png"))
-        # Multiple scene backgrounds for dialogue variety
-        scene_images = script.get("scene_images", [])
-        for si, si_data in enumerate(scene_images[:5]):
-            si_prompt = si_data.get("prompt", f"a {scene} interior, 3D cartoon style, 16:9, no people")
-            image_prompts.append((si_prompt, f"scene_{si}.png"))
+        # Scene backgrounds generated as 2×2 atlas in _generate_scene_atlas below
 
     # --- Resume check ---
     resume_result = _check_step2_resume(checkpoint, script, dirs, n, is_quest,
@@ -377,6 +374,9 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
             if is_quest:
                 # Quest uses per-character atlas (4 chars × 8 poses), no ref images
                 _generate_quest_atlases(script, img_dir, tts_thread)
+                # Generate scene backgrounds as 2×2 grid atlas (1 API call instead of 4)
+                _scene_images = script.get("scene_images", [])
+                _generate_scene_atlas(_scene_images, scene, img_dir, tts_thread)
             else:
                 _generate_dialogue_images(
                     dialogue, img_dir, char_a_desc, char_b_desc, scene,
