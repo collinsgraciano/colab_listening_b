@@ -697,6 +697,39 @@ def compose_quest(
         workers = os.cpu_count() or 2
     print(f"  [Quest] Rendering {total_segs} segments with {workers} thread(s)...")
 
+    # --- Pre-process all rembg cutouts single-threaded (avoids onnxruntime concurrency issues) ---
+    if workers > 1:
+        from stop_motion import remove_bg, normalize_pose
+        from PIL import Image as _PIL
+        _all_pose_paths: set[str] = set()
+        # Collect all unique pose paths from char_pose_map + host_poses
+        if char_pose_map:
+            for poses in char_pose_map.values():
+                _all_pose_paths.update(poses)
+        if host_poses:
+            _all_pose_paths.update(host_poses)
+        # Also from pose_images (legacy)
+        for line_poses in (pose_images or []):
+            _all_pose_paths.update(line_poses)
+
+        _rembg_count = 0
+        for p_path in sorted(_all_pose_paths):
+            if not os.path.exists(p_path):
+                continue
+            cache_path = sm_root / f"cutout_{Path(p_path).stem}.png"
+            if cache_path.exists():
+                continue
+            try:
+                raw = _PIL.open(p_path)
+                alpha = remove_bg(raw)
+                norm = normalize_pose(alpha)
+                norm.save(str(cache_path))
+                _rembg_count += 1
+            except Exception as e:
+                print(f"  [Quest] rembg error for {p_path}: {e}")
+        if _rembg_count:
+            print(f"  [Quest] Pre-processed {_rembg_count} pose cutouts (single-thread rembg)")
+
     if workers <= 1:
         # --- Single-thread (original behavior) ---
         for seg_idx, seg in enumerate(timeline):
