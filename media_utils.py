@@ -221,7 +221,8 @@ def concat_segments(segment_paths: list[str], output_path: str,
 def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
                    work_dir: str, srt_dir: str, pad: float = 0.4,
                    progress_cb=None, show_zh: bool = True,
-                   subtitle_seg_types: tuple[str, ...] = ("dialogue", "welcome", "hook_intro", "outro")) -> str:
+                   subtitle_seg_types: tuple[str, ...] = ("dialogue", "welcome", "hook_intro", "outro"),
+                   en_font_size: int = 60, zh_font_size: int = 50) -> str:
     """Render dialogue subtitles via Pillow and burn them onto the video.
 
     Extracts subtitle entries from timeline segments whose type is in
@@ -337,8 +338,8 @@ def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
     sub_overlay_dir.mkdir(exist_ok=True)
 
     BOTTOM_MARGIN = 36  # clear of frame edge + YouTube player UI
-    EN_SIZE = 44
-    ZH_SIZE = 38
+    EN_SIZE = en_font_size
+    ZH_SIZE = zh_font_size
     MAX_SUB_W = w - 80
     LINE_GAP = 6
 

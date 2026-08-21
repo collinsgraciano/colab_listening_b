@@ -184,6 +184,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true", help="Resume from last checkpoint in output dir")
     parser.add_argument("--no-4k", dest="no_4k", action="store_true", help="Skip the final 4K upscaling step")
     parser.add_argument("--no-zh-subtitle", dest="no_zh_subtitle", action="store_true", help="Hide Chinese subtitles (default: show ZH subtitles)")
+    parser.add_argument("--subtitle-font-size", type=int, default=60, help="English subtitle font size in pixels (default 60). ZH subtitle is auto-scaled to 85%% of EN size.")
     parser.add_argument("--tts-rate", default=None, help="Override dialogue English TTS rate (e.g. '-15%%', '0%%'). Default: mode-dependent (quest '0%%', others '-15%%')")
     parser.add_argument("--tts-engine", default="kokoro", choices=["kokoro", "voxcpm"],
                         help="TTS engine: 'kokoro' (default, local) or 'voxcpm' (VoxCPM via Cloudflare Worker, LLM-designed voices)")
@@ -688,6 +689,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             srt_dir=str(sub_dir),
             pad=args.pad,
             show_zh=not getattr(args, "no_zh_subtitle", False),
+            subtitle_font_size=args.subtitle_font_size,
             progress_cb=progress_cb,
         )
     elif args.structure == "image":
@@ -720,6 +722,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             pad=args.pad,
             progress_cb=progress_cb,
             animation=args.animation,
+            subtitle_font_size=args.subtitle_font_size,
         )
     else:
         final_path = compose_listening(
@@ -736,6 +739,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
             progress_cb=progress_cb,
             group_info=group_info,
             line_to_group=line_to_group,
+            subtitle_font_size=args.subtitle_font_size,
         )
     _save_checkpoint(work_dir, "step5_compose")
     return final_path, safe_vid_name
