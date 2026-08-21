@@ -319,6 +319,13 @@ def burn_subtitles(no_sub_path: str, timeline: list[dict], script: dict,
                 )
         t_cursor += dur
 
+    # Drop entries that have no visible text (happens when show_zh=False
+    # and the entry's EN side is empty because ZH had more sentences)
+    subtitle_entries = [
+        e for e in subtitle_entries
+        if e["en"] or (e["zh"] if show_zh else "")
+    ]
+
     if not subtitle_entries:
         shutil.copy2(no_sub_path, final_path)
         return final_path
