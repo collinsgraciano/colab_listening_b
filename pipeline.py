@@ -664,7 +664,7 @@ def _step5_compose(args, checkpoint: dict, script: dict, work_dir: Path, dirs: d
         # Multiple scene backgrounds for dialogue variety
         scene_bg_list = [scene_img]
         si_list = script.get("scene_images", [])
-        for si in range(min(5, len(si_list))):
+        for si in range(len(si_list)):
             p = str(dirs["images"] / f"scene_{si}.png")
             if os.path.exists(p):
                 scene_bg_list.append(p)
