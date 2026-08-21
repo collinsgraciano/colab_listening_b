@@ -122,7 +122,7 @@ class VoxCPMEngine(TTSEngine):
         data = [
             text,
             control,
-            reference_wav_path,
+            reference_wav_path or "",
             use_prompt_text,
             prompt_text,
             cfg_value if cfg_value is not None else self.CFG_VALUE,
@@ -187,7 +187,9 @@ class VoxCPMEngine(TTSEngine):
                         if etype == "complete":
                             return edata
                         if etype == "error":
-                            raise RuntimeError(f"VoxCPM error: {edata}")
+                            raise RuntimeError(
+                                f"VoxCPM error: {edata}\nRaw SSE:\n{buf}"
+                            )
                         buf = ""
                     continue
                 buf += raw + "\n"
@@ -263,15 +265,29 @@ class VoxCPMEngine(TTSEngine):
         else:
             # Generate reference clip (no reference audio, just control description)
             ref_text = self._REF_TEXTS[voice_hash % len(self._REF_TEXTS)]
-            print(f"  [VoxCPM] Generating reference voice for: {voice[:60]}...")
-            eid = self._submit(
-                ref_text, voice,
-                cfg_value=self.CFG_VALUE,
-                do_normalize=self.DO_NORMALIZE,
-                denoise=self.DENOISE,
-            )
-            result = self._wait(eid, timeout=600)
-            self._download(result, ref_wav)
+            last_err = None
+            for attempt in range(3):
+                if attempt > 0:
+                    wait = 15 * attempt
+                    print(f"  [VoxCPM] Retry {attempt}/2 after {wait}s...")
+                    time.sleep(wait)
+                try:
+                    print(f"  [VoxCPM] Generating reference voice for: {voice[:60]}...")
+                    eid = self._submit(
+                        ref_text, voice,
+                        cfg_value=self.CFG_VALUE,
+                        do_normalize=self.DO_NORMALIZE,
+                        denoise=self.DENOISE,
+                    )
+                    result = self._wait(eid, timeout=600)
+                    self._download(result, ref_wav)
+                    last_err = None
+                    break
+                except Exception as e:
+                    last_err = e
+                    print(f"  [VoxCPM] Reference generation failed (attempt {attempt+1}): {e}")
+            if last_err:
+                raise last_err
 
         # Upload reference to Worker
         gradio_path = self._upload_reference_wav(ref_wav)
