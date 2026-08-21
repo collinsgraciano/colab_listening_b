@@ -306,6 +306,11 @@ def _render_sm_segment(
         pose_paths = layer.get("poses", [])
         is_speaker = layer.get("is_speaker", False)
         processed = []
+        _uncached = [p for p in pose_paths
+                     if os.path.exists(p)
+                     and not (cache_dir / f"cutout_{Path(p).stem}.png").exists()]
+        if _uncached:
+            print(f"    rembg {len(_uncached)} pose(s)...", flush=True)
         for p_path in pose_paths:
             if not os.path.exists(p_path):
                 continue
