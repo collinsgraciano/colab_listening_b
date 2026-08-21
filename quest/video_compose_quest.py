@@ -509,6 +509,136 @@ def _render_sm_segment(
     return True
 
 
+def _run_fallback(cmd, out_path, scene_img, duration, render_fps):
+    """Run ffmpeg cmd, fallback to static image on failure."""
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        print("  FFmpeg TIMEOUT, using static fallback")
+        r = None
+    if r is None or r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+        fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
+                        "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                        "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
+                        "-map", "0:v:0", "-map", "1:a:0",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                        out_path]
+        try:
+            r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+        except subprocess.TimeoutExpired:
+            print("  Fallback also timed out, skipping")
+            return
+        if r2.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
+            print(f"  Fallback also failed: {r2.stderr[-200:] if r2.stderr else 'unknown'}")
+
+
+def _prepare_segment(seg_idx, seg, timeline, dialogue, narration,
+                     normal_paths, host_poses, host_bg_path, scene_bgs,
+                     char_pose_map, pose_images, scene_img, pad, render_fps,
+                     tmp_dir, sm_root):
+    """Prepare params and render a single segment. Returns (out_path or None, seg_type)."""
+    seg_type = seg["type"]
+    duration = seg["duration"]
+    audio_idx = seg.get("audio_index", 0)
+    out_path = str(tmp_dir / f"seg_{seg_idx:03d}.mp4")
+
+    audio_file = None
+    audio_dur = seg.get("audio_dur", duration - pad)
+
+    if seg_type == "dialogue":
+        audio_file = normal_paths[audio_idx] if audio_idx < len(normal_paths) else None
+    elif seg_type == "welcome":
+        audio_file = narration.get("welcome")
+    elif seg_type == "hook_intro":
+        audio_file = narration.get("hook")
+    elif seg_type == "outro":
+        audio_file = narration.get("outro")
+
+    fade_af = f"afade=t=in:st=0:d=0.05,afade=t=out:st={max(0, audio_dur-0.05):.2f}:d=0.05"
+
+    if seg_type in ("welcome", "hook_intro", "outro"):
+        h_poses = host_poses or [scene_img]
+        char_layers = [{"poses": h_poses, "is_speaker": True}]
+        frames_dir = sm_root / f"{seg_type}_{seg_idx}"
+        direction = 1 if seg_idx % 2 == 0 else -1
+        success = _render_sm_segment(
+            char_layers, host_bg_path, audio_file, out_path, duration,
+            frames_dir, sm_root,
+            render_fps=render_fps,
+            seed=hash(seg_type) % 1000 + seg_idx,
+            direction=direction, fade_af=fade_af,
+        )
+        if not success:
+            cmd = ["ffmpeg", "-y", "-loop", "1", "-i", host_bg_path,
+                   "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                   "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
+                   "-map", "0:v:0", "-map", "1:a:0",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                   out_path]
+            _run_fallback(cmd, out_path, scene_img, duration, render_fps)
+
+    elif seg_type == "dialogue":
+        # Pre-compute dialogue position for scene_bg rotation
+        dialogue_seg_count = sum(1 for s in timeline[:timeline.index(seg)] if s["type"] == "dialogue")
+        n_scene_bgs = max(1, len(scene_bgs))
+        bg_idx = (dialogue_seg_count // 5) % n_scene_bgs
+        line_bg = scene_bgs[bg_idx]
+
+        line_data = dialogue[audio_idx] if audio_idx < len(dialogue) else {}
+        speaker = line_data.get("speaker", "char_a")
+        on_screen = line_data.get("on_screen", [speaker])
+
+        if char_pose_map:
+            char_layers = []
+            for char_key in on_screen:
+                poses = char_pose_map.get(char_key, [])
+                if not poses:
+                    poses = char_pose_map.get("char_a", [line_bg])
+                char_layers.append({
+                    "poses": poses,
+                    "is_speaker": (char_key == speaker),
+                })
+        else:
+            idx = min(audio_idx, len(pose_images) - 1) if pose_images else 0
+            line_poses = pose_images[idx] if pose_images and idx < len(pose_images) else [line_bg]
+            char_layers = [{"poses": line_poses, "is_speaker": True}]
+
+        frames_dir = sm_root / f"dialogue_{audio_idx}"
+        direction = 1 if audio_idx % 2 == 0 else -1
+        success = _render_sm_segment(
+            char_layers, line_bg, audio_file, out_path, duration,
+            frames_dir, sm_root,
+            render_fps=render_fps,
+            seed=audio_idx * 7 + 13,
+            direction=direction, fade_af=fade_af,
+        )
+        if not success:
+            cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
+                   "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+                   "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
+                   "-map", "0:v:0", "-map", "1:a:0",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+                   out_path]
+            _run_fallback(cmd, out_path, scene_img, duration, render_fps)
+
+    else:
+        cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
+               "-f", "lavfi", "-i", "anullsrc=stereo:44100",
+               "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
+               "-map", "0:v:0", "-map", "1:a:0",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+               out_path]
+        _run_fallback(cmd, out_path, scene_img, duration, render_fps)
+
+    if os.path.exists(out_path) and os.path.getsize(out_path) >= 1000:
+        return out_path, seg_type
+    return None, seg_type
+
+
 def compose_quest(
     work_dir: str,
     pose_images: list[list[str]],
@@ -525,6 +655,7 @@ def compose_quest(
     scene_bg_list: list[str] | None = None,
     render_fps: int = 12,
     show_zh: bool = True,
+    workers: int = 1,
     progress_cb=None,
 ) -> str:
     """Compose the final quest video — stop-motion with multi-character + multi-scene.
@@ -534,6 +665,7 @@ def compose_quest(
         scene_bg_list: List of background images for dialogue segments.
             Different backgrounds are used for different groups of lines for
             visual variety. Falls back to [scene_img] if None.
+        workers: Number of render threads (1=single-thread, 2+=multi-thread, 0=auto=cpu_count).
     """
     def _cb(pct, msg):
         if progress_cb:
@@ -553,148 +685,60 @@ def compose_quest(
     host_bg_path = host_bg or scene_img
     scene_bgs = scene_bg_list or [scene_img]
     dialogue = script.get("dialogue", [])
-    # Assign scene backgrounds to dialogue lines (cycle through scene_bgs)
-    # Group consecutive lines into chunks of ~5, each group gets a different bg
-    n_scene_bgs = max(1, len(scene_bgs))
 
-    segments = []
-    seg_idx = 0
+    sm_root = Path(tempfile.gettempdir()) / f"sm_frames_{work.name}"
+    sm_root.mkdir(parents=True, exist_ok=True)
+
     total_segs = len(timeline)
-    dialogue_seg_idx = 0  # track dialogue segment count for scene_bg rotation
+    segments: list[str | None] = [None] * total_segs
 
-    for seg in timeline:
-        seg_type = seg["type"]
-        duration = seg["duration"]
-        audio_idx = seg.get("audio_index", 0)
-        out_path = str(tmp_dir / f"seg_{seg_idx:03d}.mp4")
-        seg_idx += 1
+    # Resolve workers
+    if workers == 0:
+        workers = os.cpu_count() or 2
+    print(f"  [Quest] Rendering {total_segs} segments with {workers} thread(s)...")
 
-        cmd = None
-        audio_file = None
-        audio_dur = seg.get("audio_dur", duration - pad)
-
-        if seg_type == "dialogue":
-            audio_file = normal_paths[audio_idx] if audio_idx < len(normal_paths) else None
-        elif seg_type == "welcome":
-            audio_file = narration.get("welcome")
-        elif seg_type == "hook_intro":
-            audio_file = narration.get("hook")
-        elif seg_type == "outro":
-            audio_file = narration.get("outro")
-
-        fade_af = f"afade=t=in:st=0:d=0.05,afade=t=out:st={max(0, audio_dur-0.05):.2f}:d=0.05"
-
-        # --- All segment types use stop-motion rendering ---
-        if seg_type in ("welcome", "hook_intro", "outro"):
-            # Host stop-motion on TV studio background
-            h_poses = host_poses or [scene_img]
-            char_layers = [{"poses": h_poses, "is_speaker": True}]
-            _sm_root = Path(tempfile.gettempdir()) / f"sm_frames_{work.name}"
-            _sm_root.mkdir(parents=True, exist_ok=True)
-            frames_dir = _sm_root / f"{seg_type}_{seg_idx}"
-            cache_dir = _sm_root
-            direction = 1 if seg_idx % 2 == 0 else -1
-            success = _render_sm_segment(
-                char_layers, host_bg_path, audio_file, out_path, duration,
-                frames_dir, cache_dir,
-                render_fps=render_fps,
-                overlay_path=None,
-                seed=hash(seg_type) % 1000 + seg_idx,
-                direction=direction, fade_af=fade_af,
+    if workers <= 1:
+        # --- Single-thread (original behavior) ---
+        for seg_idx, seg in enumerate(timeline):
+            out_path, seg_type = _prepare_segment(
+                seg_idx, seg, timeline, dialogue, narration,
+                normal_paths, host_poses, host_bg_path, scene_bgs,
+                char_pose_map, pose_images, scene_img, pad, render_fps,
+                tmp_dir, sm_root,
             )
-            if not success:
-                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", host_bg_path,
-                       "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                       "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
-                       "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                       out_path]
+            if out_path:
+                segments[seg_idx] = out_path
+            print(f"  Segment {seg_idx + 1}/{total_segs} ({seg_type}) done")
+            _cb(int((seg_idx + 1) / total_segs * 80),
+                f"  Segment {seg_idx + 1}/{total_segs} ({seg_type}) done")
+    else:
+        # --- Multi-thread ---
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
-        elif seg_type == "dialogue":
-            # Pick scene background for this dialogue line
-            bg_idx = (dialogue_seg_idx // 5) % n_scene_bgs
-            line_bg = scene_bgs[bg_idx]
-            dialogue_seg_idx += 1
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futs = {
+                pool.submit(
+                    _prepare_segment,
+                    seg_idx, seg, timeline, dialogue, narration,
+                    normal_paths, host_poses, host_bg_path, scene_bgs,
+                    char_pose_map, pose_images, scene_img, pad, render_fps,
+                    tmp_dir, sm_root,
+                ): seg_idx
+                for seg_idx, seg in enumerate(timeline)
+            }
+            done_count = 0
+            for fut in as_completed(futs):
+                seg_idx = futs[fut]
+                out_path, seg_type = fut.result()
+                if out_path:
+                    segments[seg_idx] = out_path
+                done_count += 1
+                print(f"  Segment {done_count}/{total_segs} ({seg_type}) done")
+                _cb(int(done_count / total_segs * 80),
+                    f"  Segment {done_count}/{total_segs} ({seg_type}) done")
 
-            line_data = dialogue[audio_idx] if audio_idx < len(dialogue) else {}
-            speaker = line_data.get("speaker", "char_a")
-            on_screen = line_data.get("on_screen", [speaker])
-
-            if char_pose_map:
-                char_layers = []
-                for char_key in on_screen:
-                    poses = char_pose_map.get(char_key, [])
-                    if not poses:
-                        poses = char_pose_map.get("char_a", [line_bg])
-                    char_layers.append({
-                        "poses": poses,
-                        "is_speaker": (char_key == speaker),
-                    })
-            else:
-                idx = min(audio_idx, len(pose_images) - 1) if pose_images else 0
-                line_poses = pose_images[idx] if pose_images and idx < len(pose_images) else [line_bg]
-                char_layers = [{"poses": line_poses, "is_speaker": True}]
-
-            _sm_root = Path(tempfile.gettempdir()) / f"sm_frames_{work.name}"
-            _sm_root.mkdir(parents=True, exist_ok=True)
-            frames_dir = _sm_root / f"dialogue_{audio_idx}"
-            cache_dir = _sm_root
-            direction = 1 if audio_idx % 2 == 0 else -1
-            success = _render_sm_segment(
-                char_layers, line_bg, audio_file, out_path, duration,
-                frames_dir, cache_dir,
-                render_fps=render_fps,
-                overlay_path=None,
-                seed=audio_idx * 7 + 13,
-                direction=direction, fade_af=fade_af,
-            )
-            if not success:
-                cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
-                       "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                       "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
-                       "-map", "0:v:0", "-map", "1:a:0",
-                       "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                       "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                       out_path]
-        else:
-            # Unknown segment type — silent static placeholder keeps timeline intact
-            cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
-                   "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                   "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
-                   "-map", "0:v:0", "-map", "1:a:0",
-                   "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                   "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                   out_path]
-
-        # --- Common FFmpeg execution (only for segments that set cmd) ---
-        if cmd is not None:
-            try:
-                r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-            except subprocess.TimeoutExpired:
-                print(f"  FFmpeg TIMEOUT (300s) on seg {seg_idx} ({seg_type}), using fallback")
-                r = None
-            if r is None or r.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-                print(f"  FFmpeg error seg {seg_idx}: {r.stderr[-200:] if r else 'timeout'}")
-                fallback_cmd = ["ffmpeg", "-y", "-loop", "1", "-i", scene_img,
-                                "-f", "lavfi", "-i", "anullsrc=stereo:44100",
-                                "-t", f"{duration:.3f}", "-vf", f"{VF_NORM},fps={render_fps}",
-                                "-map", "0:v:0", "-map", "1:a:0",
-                                "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
-                                out_path]
-                try:
-                    r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
-                except subprocess.TimeoutExpired:
-                    print(f"  Fallback also timed out, skipping segment {seg_idx}")
-                    continue
-                if r2.returncode != 0 or not os.path.exists(out_path) or os.path.getsize(out_path) < 1000:
-                    print(f"  Fallback also failed, skipping segment: {r2.stderr[-200:]}")
-                    continue
-        segments.append(out_path)
-        _cb(int(seg_idx / total_segs * 80),
-            f"  Segment {seg_idx}/{total_segs} ({seg_type}) done")
-        print(f"  Segment {seg_idx}/{total_segs} ({seg_type}) done")
+    # Filter out None segments (failed + skipped)
+    segments = [s for s in segments if s is not None]
 
     # --- Concat all segments ---
     _cb(80, "Concatenating segments...")
