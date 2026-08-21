@@ -82,12 +82,34 @@ except ImportError:
     _HAS_REMBG = False
 
 
+def _has_transparency(img: Image.Image, threshold: float = 0.05) -> bool:
+    """Check if an image already has significant transparency.
+
+    Handles P-mode (palette transparency from is_segmentation=true) and RGBA.
+    Returns True if >threshold fraction of pixels are fully transparent.
+    """
+    import numpy as _np
+    if img.mode == "P" and "transparency" in img.info:
+        rgba = img.convert("RGBA")
+    elif img.mode == "RGBA":
+        rgba = img
+    else:
+        return False
+    alpha = _np.array(rgba.getchannel("A"))
+    return bool((_np.count_nonzero(alpha == 0) / alpha.size) > threshold)
+
+
 def remove_bg(img: Image.Image) -> Image.Image:
     """Remove background from a PIL image → RGBA with transparency.
 
-    Uses rembg (U2-Net AI model) when available for high-quality matting.
-    Falls back to luminance-threshold white removal if rembg is not installed.
+    If the image already has transparency (e.g. generated with
+    is_segmentation=true), returns the RGBA conversion directly without
+    calling rembg. Otherwise uses rembg (U2-Net) or falls back to
+    luminance-threshold white removal.
     """
+    # Fast path: image already has transparency (from is_segmentation=true)
+    if _has_transparency(img):
+        return img.convert("RGBA")
     if _HAS_REMBG:
         result = _rembg_remove(img)
         return result.convert("RGBA")
