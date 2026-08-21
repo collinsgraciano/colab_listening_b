@@ -259,10 +259,8 @@ def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
         try:
             gen_params = {
                 "prompt": atlas_prompt,
-                "provider": "frontier",
-                "quality": "high",
-                "image_size": {"width": 1920, "height": 1920},
-                "resolution": "4K",
+                "provider": "seedream",
+                "image_size": "4096x4096",
                 "output_format": "png",
                 "is_segmentation": True,
             }
@@ -360,20 +358,19 @@ def generate_quest_atlases(script, img_dir, tts_thread):
             f"no props, no objects, no scene, no text"
         )
         grid_w, grid_h = 4, 2
-        # frontier 4K: resolution param controls quality tier, image_size is a hint
-        # MCP seedream ignores custom image_size → always 2048×2048
-        # frontier 4K实测输出 2880×2880 → 4×2 grid = 720×1440 per cell
-        img_size = {"width": 3840, "height": 1920}
+        # seedream image_size must be a STRING (e.g. "4992x3328"), not JSON object.
+        # JSON object silently falls back to 2048×2048. String preset works.
+        # "4992x3328" (4K, 3:2) → 4×2 grid = 1248×1664 per cell (vertical, ideal for half-body)
+        img_size = "4992x3328"
 
         print(f"  [QuestAtlas] Generating {grid_w}×{grid_h} atlas for {char_key} ({n_poses} poses)...")
         try:
             gen_params = {
                 "prompt": atlas_prompt,
-                "provider": "frontier",
-                "quality": "high",
+                "provider": "seedream",
                 "image_size": img_size,
-                "resolution": "4K",
                 "output_format": "png",
+                "is_segmentation": True,
             }
             result = call_tool("generate_image", gen_params)
             task_id = parse_task_id(result)
@@ -497,10 +494,8 @@ def generate_scene_atlas(scene_images, scene, img_dir, tts_thread):
         try:
             gen_params = {
                 "prompt": atlas_prompt,
-                "provider": "frontier",
-                "quality": "high",
-                "image_size": {"width": 1920, "height": 1920},
-                "resolution": "4K",
+                "provider": "seedream",
+                "image_size": "4992x3328",
                 "output_format": "png",
             }
             result = call_tool("generate_image", gen_params)
