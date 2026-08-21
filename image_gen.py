@@ -95,6 +95,10 @@ def generate_images(image_prompts, img_dir, tts_thread):
     image_urls = {}
     image_failed = False
     for prompt, filename in image_prompts:
+        dest = str(img_dir / filename)
+        if os.path.exists(dest):
+            print(f"  [Image] {filename} already exists, skipping")
+            continue
         print(f"  [Image] Generating: {filename}...")
         try:
             result = call_tool("generate_image", {

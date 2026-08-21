@@ -271,10 +271,11 @@ class VoxCPMEngine(TTSEngine):
             # Generate reference clip (no reference audio, just control description)
             ref_text = self._REF_TEXTS[voice_hash % len(self._REF_TEXTS)]
             last_err = None
-            for attempt in range(3):
+            max_attempts = 20
+            for attempt in range(max_attempts):
                 if attempt > 0:
-                    wait = 15 * attempt
-                    print(f"  [VoxCPM] Retry {attempt}/2 after {wait}s...")
+                    wait = min(15 * attempt, 60)
+                    print(f"  [VoxCPM] Retry {attempt}/{max_attempts-1} after {wait}s...")
                     time.sleep(wait)
                 try:
                     print(f"  [VoxCPM] Generating reference voice for: {voice[:60]}...")
@@ -290,7 +291,7 @@ class VoxCPMEngine(TTSEngine):
                     break
                 except Exception as e:
                     last_err = e
-                    print(f"  [VoxCPM] Reference generation failed (attempt {attempt+1}): {e}")
+                    print(f"  [VoxCPM] Reference generation failed (attempt {attempt+1}/{max_attempts}): {e}")
             if last_err:
                 raise last_err
 
