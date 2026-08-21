@@ -183,6 +183,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--no-4k", dest="no_4k", action="store_true", help="Skip the final 4K upscaling step")
     parser.add_argument("--no-zh-subtitle", dest="no_zh_subtitle", action="store_true", help="Hide Chinese subtitles (default: show ZH subtitles)")
     parser.add_argument("--tts-rate", default=None, help="Override dialogue English TTS rate (e.g. '-15%%', '0%%'). Default: mode-dependent (quest '0%%', others '-15%%')")
+    parser.add_argument("--tts-engine", default="kokoro", choices=["kokoro", "voxcpm"],
+                        help="TTS engine: 'kokoro' (default, local) or 'voxcpm' (VoxCPM via Cloudflare Worker, LLM-designed voices)")
+    parser.add_argument("--voxcpm-worker-url", default=None, help="VoxCPM Cloudflare Worker URL (or set VOXCPM_WORKER_URL env var)")
+    parser.add_argument("--voxcpm-api-key", default=None, help="VoxCPM Worker API key (optional, or set VOXCPM_API_KEY env var)")
     parser.add_argument("--upscale-timeout", type=int, default=3600, help="Timeout in seconds for 4K upscale (default 3600)")
     return parser.parse_args()
 
@@ -354,7 +358,8 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
         def _tts_worker():
             try:
                 _generate_tts(script, dialogue, audio_dir, tts_results,
-                              quest=is_quest, tts_rate=args.tts_rate)
+                              quest=is_quest, tts_rate=args.tts_rate,
+                              tts_engine=args.tts_engine)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -411,6 +416,13 @@ def _step2_images_tts(args, checkpoint: dict, script: dict, work_dir: Path, dirs
 
     if tts_thread is not None:
         tts_thread.join()
+
+    # Persist voxcpm_voices to script JSON (for resume support)
+    if args.tts_engine == "voxcpm" and script.get("voxcpm_voices"):
+        script_path = work_dir / "script.json"
+        if script_path.exists():
+            script_path.write_text(json.dumps(script, ensure_ascii=False, indent=2), encoding="utf-8")
+            print("  [TTS] Saved VoxCPM voice descriptions to script.json")
 
     _tts_err = tts_results.get("fatal_error")
     if _tts_err:
@@ -782,6 +794,12 @@ def main():
         args.pad = 0.4
 
     os.environ["LLM_RETRIES"] = str(args.llm_retries)
+
+    # TTS engine config
+    if args.voxcpm_worker_url:
+        os.environ["VOXCPM_WORKER_URL"] = args.voxcpm_worker_url
+    if args.voxcpm_api_key:
+        os.environ["VOXCPM_API_KEY"] = args.voxcpm_api_key
 
     if args.llm_provider == "openai":
         os.environ["LLM_PROVIDER"] = "openai"
