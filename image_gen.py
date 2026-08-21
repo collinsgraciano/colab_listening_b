@@ -374,7 +374,6 @@ def generate_quest_atlases(script, img_dir, tts_thread):
                 "image_size": img_size,
                 "resolution": "4K",
                 "output_format": "png",
-                "is_segmentation": True,
             }
             result = call_tool("generate_image", gen_params)
             task_id = parse_task_id(result)
