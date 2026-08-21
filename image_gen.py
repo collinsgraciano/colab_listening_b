@@ -294,9 +294,7 @@ def generate_pose_images(dialogue, img_dir, char_a_desc, char_b_desc, scene,
                 cell.save(out_path)
                 print(f"      [PoseAtlas] Split: pose_{line_idx}_{j}.png ({cell.size})")
 
-            # Clean up atlas
-            if os.path.exists(atlas_path):
-                os.remove(atlas_path)
+            # atlas 原图保留，不再删除
 
             return (line_idx, True)
         except RuntimeError as e:
@@ -412,8 +410,7 @@ def generate_quest_atlases(script, img_dir, tts_thread):
                     print(f"    [QuestAtlas] Split: pose_{char_key}_{idx}.png ({cell.size})")
                     idx += 1
 
-            if os.path.exists(atlas_path):
-                os.remove(atlas_path)
+            # atlas 原图保留，不再删除
         except RuntimeError as e:
             if "ALL_MCP_TOKENS_EXHAUSTED" in str(e):
                 if tts_thread:
