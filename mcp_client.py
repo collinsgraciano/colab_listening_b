@@ -161,6 +161,21 @@ def initialize(token=None, tokens=None):
     return result
 
 
+def reinitialize(tokens=None):
+    """Reset MCP global state and re-init with new tokens.
+
+    Used by web app to ensure clean state before each pipeline run.
+    Without this, stale _session_id from a previous run causes errors.
+    """
+    global _TOKENS, _token_idx, TOKEN, _session_id, _msg_id
+    _TOKENS = []
+    _token_idx = 0
+    TOKEN = ""
+    _session_id = None
+    _msg_id = 0
+    return initialize(tokens=tokens) if tokens else initialize()
+
+
 def call_tool(name, arguments):
     """Call an MCP tool. Auto-rotates token on credit errors in response."""
     result = mcp_call("tools/call", {"name": name, "arguments": arguments})

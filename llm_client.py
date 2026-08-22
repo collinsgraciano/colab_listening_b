@@ -11,24 +11,24 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
-# SenseNova API (default and only LLM backend)
-SENSENOVA_BASE = os.environ.get("SENSENOVA_BASE", "https://token.sensenova.cn/v1")
-SENSENOVA_API_KEY = os.environ.get("SENSENOVA_API_KEY", "")
-SENSENOVA_MODEL = os.environ.get("SENSENOVA_MODEL", "deepseek-v4-flash")
-
 # Rate limiting: enforce minimum interval between LLM API calls to avoid HTTP 429.
 # glm-5.2 is especially aggressive about "request rate increased too quickly".
 _LAST_CALL_TIME = 0.0
-_MIN_CALL_INTERVAL = float(os.environ.get("LLM_MIN_INTERVAL", "3.0"))
+
+
+def _get_min_call_interval() -> float:
+    """Read LLM_MIN_INTERVAL from env per-call (not frozen at import time)."""
+    return float(os.environ.get("LLM_MIN_INTERVAL", "3.0"))
 
 
 def _enforce_rate_limit():
     """Sleep if the previous LLM call was too recent."""
     import time as _time
     global _LAST_CALL_TIME
+    min_interval = _get_min_call_interval()
     elapsed = _time.time() - _LAST_CALL_TIME
-    if elapsed < _MIN_CALL_INTERVAL:
-        wait = _MIN_CALL_INTERVAL - elapsed
+    if elapsed < min_interval:
+        wait = min_interval - elapsed
         _time.sleep(wait)
     _LAST_CALL_TIME = _time.time()
 
