@@ -497,14 +497,14 @@ def compose_listening(
             video_src = HOOK_CLIP if HOOK_CLIP and os.path.exists(HOOK_CLIP) else scene_img
             is_static = False
         elif seg_type == "practice_intro":
-            video_src = clip_paths[0] if clip_paths else (HOOK_CLIP or scene_img)
+            video_src = HOOK_CLIP if HOOK_CLIP and os.path.exists(HOOK_CLIP) else scene_img
             is_static = False
         elif seg_type == "outro":
             video_src = HOOK_CLIP if HOOK_CLIP and os.path.exists(HOOK_CLIP) else scene_img
             is_static = False
         else:
             idx = min(audio_idx, len(DIALOGUE_CLIPS)-1) if DIALOGUE_CLIPS else 0
-            video_src = DIALOGUE_CLIPS[idx] if DIALOGUE_CLIPS else (HOOK_CLIP or scene_img)
+            video_src = DIALOGUE_CLIPS[idx] if DIALOGUE_CLIPS and DIALOGUE_CLIPS[idx] and os.path.exists(DIALOGUE_CLIPS[idx]) else (HOOK_CLIP if HOOK_CLIP and os.path.exists(HOOK_CLIP) else scene_img)
             is_static = False
 
         fade_af = f"afade=t=in:st=0:d=0.05,afade=t=out:st={max(0, audio_dur-0.05):.2f}:d=0.05"
