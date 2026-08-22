@@ -1,4 +1,8 @@
-kokoro>=0.8.4
+# NOTE: kokoro & misaki require python<3.13. On Python 3.13 (e.g. Colab),
+# install with: pip install --no-deps misaki[en]==0.9.4 kokoro==0.9.4
+# then install their deps separately (see notebook install section).
+kokoro==0.9.4
+misaki[en]==0.9.4
 soundfile
 torch
 edge-tts
@@ -6,8 +10,18 @@ Pillow
 opencc-python-reimplemented
 cn2an
 pypinyin
+pypinyin-dict
 ordered_set
 jieba
+addict
+regex
+espeakng-loader
+num2words
+phonemizer-fork
+spacy
+spacy-curated-transformers
+loguru
+transformers
 opencv-python
 numpy
 rembg
