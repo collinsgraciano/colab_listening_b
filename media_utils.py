@@ -68,7 +68,7 @@ def get_duration(path: str) -> float:
         return float(subprocess.check_output(
             ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
              "-of", "csv=p=0", str(path)],
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
         ).strip())
     except Exception:
         return 0.0
@@ -83,7 +83,7 @@ def probe_resolution(video_path: str) -> tuple[int, int]:
         out = subprocess.check_output(
             ["ffprobe", "-v", "quiet", "-select_streams", "v:0",
              "-show_entries", "stream=width,height", "-of", "csv=p=0",
-             str(video_path)], text=True).strip()
+             str(video_path)], text=True, encoding="utf-8", errors="replace").strip()
         w_str, h_str = out.split("x")
         w, h = int(w_str), int(h_str)
         if w > 0 and h > 0:
@@ -100,7 +100,7 @@ def has_audio(video_path: str) -> bool:
             ["ffprobe", "-v", "quiet", "-select_streams", "a",
              "-show_entries", "stream=codec_type", "-of", "csv=p=0",
              str(video_path)],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
         )
         return "audio" in r.stdout.strip()
     except Exception:
@@ -137,7 +137,7 @@ def run_ffmpeg_with_fallback(cmd: list[str], fallback_cmd: list[str],
     Both commands must produce the same out_path.
     """
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         print(f"  FFmpeg TIMEOUT ({timeout}s) on {label}, trying fallback...")
         r = None
@@ -151,7 +151,7 @@ def run_ffmpeg_with_fallback(cmd: list[str], fallback_cmd: list[str],
 
     # Try fallback
     try:
-        r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=timeout)
+        r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         print(f"  Fallback also timed out for {label}")
         return False

@@ -200,7 +200,7 @@ def _compute_audio_rms_segments(audio_file: str, n_segments: int = 20) -> list[f
             ["ffmpeg", "-i", audio_file, "-af",
              f"astats=metadata=1:reset={1.0/n_segments},ametadata=print:key=lavfi.astats.Overall.RMS_level",
              "-f", "null", "-"],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
         lines = r.stderr.split("\n")
         rms_vals = []
         for line in lines:
@@ -501,7 +501,7 @@ def _render_sm_segment(
                out_path]
 
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         if r.returncode != 0:
             print(f"  [Quest] FFmpeg error: {r.stderr[-200:]}")
             return False
@@ -517,7 +517,7 @@ def _render_sm_segment(
 def _run_fallback(cmd, out_path, scene_img, duration, render_fps):
     """Run ffmpeg cmd, fallback to static image on failure."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     except subprocess.TimeoutExpired:
         print("  FFmpeg TIMEOUT, using static fallback")
         r = None
@@ -530,7 +530,7 @@ def _run_fallback(cmd, out_path, scene_img, duration, render_fps):
                         "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                         out_path]
         try:
-            r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+            r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
         except subprocess.TimeoutExpired:
             print("  Fallback also timed out, skipping")
             return

@@ -423,7 +423,7 @@ def compose_listening(
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                            out_path]
                 try:
-                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
                 except subprocess.TimeoutExpired:
                     print(f"  FFmpeg TIMEOUT (600s) on group seg {gi}, using fallback")
                     r = None
@@ -438,7 +438,7 @@ def compose_listening(
                                    "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                                    out_path]
                     try:
-                        r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+                        r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
                     except subprocess.TimeoutExpired:
                         print(f"  Fallback also timed out for group seg {gi}")
                         continue
@@ -646,7 +646,7 @@ def compose_listening(
                        out_path]
 
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
         except subprocess.TimeoutExpired:
             print(f"  FFmpeg TIMEOUT (300s) on seg {seg_idx} ({seg_type}), using fallback")
             r = None
@@ -661,7 +661,7 @@ def compose_listening(
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                            out_path]
             try:
-                r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+                r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
             except subprocess.TimeoutExpired:
                 print(f"  Fallback also timed out, skipping segment {seg_idx}")
                 continue
@@ -1004,7 +1004,7 @@ def compose_image(
                     ]
                 # Run now (don't defer to common try/continue below)
                 try:
-                    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+                    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
                     if r.returncode != 0:
                         print(f"  FFmpeg error (stop_motion dialogue {d_idx}): {r.stderr[-200:]}")
                 except subprocess.TimeoutExpired:
@@ -1063,7 +1063,7 @@ def compose_image(
                        out_path]
 
         try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
         except subprocess.TimeoutExpired:
             print(f"  FFmpeg TIMEOUT (300s) on seg {seg_idx} ({seg_type}), using fallback")
             r = None
@@ -1077,7 +1077,7 @@ def compose_image(
                            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
                            out_path]
             try:
-                r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, timeout=300)
+                r2 = subprocess.run(fallback_cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
             except subprocess.TimeoutExpired:
                 print(f"  Fallback also timed out, skipping segment {seg_idx}")
                 continue

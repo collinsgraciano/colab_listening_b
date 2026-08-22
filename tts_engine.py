@@ -215,7 +215,7 @@ class TTSEngine:
             detect = subprocess.run(
                 ["ffmpeg", "-i", input_path, "-af", "volumedetect",
                  "-f", "null", "-"],
-                capture_output=True, text=True, timeout=15)
+                capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
             stderr = detect.stderr
             import re
             m = re.search(r"mean_volume:\s*(-?\d+\.?\d*)\s*dB", stderr)

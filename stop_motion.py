@@ -805,7 +805,7 @@ def _render_dialogue_segment(
 def _run_cmd(cmd: list[str], label: str, out_path: str) -> None:
     """Run FFmpeg command with fallback."""
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
         if r.returncode != 0:
             print(f"  [StopMotion] FFmpeg error ({label}): {r.stderr[-200:]}")
     except subprocess.TimeoutExpired:
